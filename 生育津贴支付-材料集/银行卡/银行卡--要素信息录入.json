@@ -1,0 +1,17 @@
+{
+  "carriername": "银行卡",
+  "factors": [
+    {
+      "factorname": "卡号",
+      "factortype": "1",
+      "factor_prompt": "",
+      "factoruse": "",
+      "ordernum": 1,
+      "remark": "",
+      "is_usermsg": "0",
+      "isrecollect": "0",
+      "factor_trans": ""
+    }
+  ],
+  "promptGroups": []
+}

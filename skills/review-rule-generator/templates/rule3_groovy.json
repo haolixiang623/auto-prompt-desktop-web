@@ -1,0 +1,13 @@
+{
+  "materialname": "{{材料名称}}",
+  "keypoints": [
+    {
+      "kpname": "{{审查要点名称}}",
+      "content": "",
+      "review_rule": "3",
+      "review_rule_js": "def value = input.get(\"{{材料}}:{{字段}}\")\nif (value == null || value.isEmpty()) {\n    return [pass: false, reason: \"{{字段}}未识别到\"]\n}\n// TODO: 实现具体审查逻辑\nreturn [pass: true, reason: \"审查通过\"]",
+      "nopassreason": "{{审核不通过原因}}",
+      "passreason": "{{审核通过原因}}"
+    }
+  ]
+}

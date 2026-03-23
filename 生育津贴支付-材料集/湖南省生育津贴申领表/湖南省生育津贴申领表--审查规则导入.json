@@ -1,0 +1,77 @@
+{
+  "materialname": "湖南省生育津贴申领表",
+  "keypoints": [
+    {
+      "kpname": "女职工姓名审查",
+      "content": "",
+      "review_rule_text": "#湖南省生育津贴申领表-女职工姓名#需与#身份证-姓名#一致",
+      "passreason": "",
+      "nopassreason": "",
+      "review_rule": "2",
+      "review_conditions": {
+        "groups": [
+          {
+            "logicToNext": null,
+            "groupFailReason": "湖南省生育津贴申领表:女职工姓名【&$湖南省生育津贴申领表:女职工姓名$@】应等于【&$身份证:姓名$@】",
+            "conditions": [
+              {
+                "elementA": "$湖南省生育津贴申领表:女职工姓名$",
+                "elementAType": "factor",
+                "elementADisplay": "$湖南省生育津贴申领表:女职工姓名$",
+                "operator": "eq",
+                "dataType": "string",
+                "elementB": "$身份证:姓名$",
+                "elementBType": "factor",
+                "elementBDisplay": "$身份证:姓名$",
+                "logicToNext": null,
+                "stringReplacements": null,
+                "delimiter": null,
+                "arrayKeys": null
+              }
+            ]
+          }
+        ]
+      },
+      "is_point": "0",
+      "is_contrast": "1",
+      "pre_rule_enabled": 0,
+      "pre_conditions": null
+    },
+    {
+      "kpname": "身份证号码校验",
+      "content": "",
+      "review_rule_text": "#湖南省生育津贴申领表-女职工姓名#需与#身份证-证件号码#一致",
+      "passreason": "",
+      "nopassreason": "",
+      "review_rule": "2",
+      "review_conditions": {
+        "groups": [
+          {
+            "logicToNext": null,
+            "groupFailReason": "湖南省生育津贴申领表:女职工姓名【&$湖南省生育津贴申领表:女职工姓名$@】应等于【&$身份证:证件号码$@】",
+            "conditions": [
+              {
+                "elementA": "$湖南省生育津贴申领表:女职工姓名$",
+                "elementAType": "factor",
+                "elementADisplay": "$湖南省生育津贴申领表:女职工姓名$",
+                "operator": "eq",
+                "dataType": "string",
+                "elementB": "$身份证:证件号码$",
+                "elementBType": "factor",
+                "elementBDisplay": "$身份证:证件号码$",
+                "logicToNext": null,
+                "stringReplacements": null,
+                "delimiter": null,
+                "arrayKeys": null
+              }
+            ]
+          }
+        ]
+      },
+      "is_point": "0",
+      "is_contrast": "1",
+      "pre_rule_enabled": 0,
+      "pre_conditions": null
+    }
+  ]
+}

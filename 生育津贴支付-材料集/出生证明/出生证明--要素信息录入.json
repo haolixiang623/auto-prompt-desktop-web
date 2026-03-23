@@ -1,0 +1,61 @@
+{
+  "carriername": "出生证明",
+  "factors": [
+    {
+      "factorname": "出生时间",
+      "factortype": "1",
+      "factor_prompt": "",
+      "factoruse": "",
+      "ordernum": 1,
+      "remark": "",
+      "is_usermsg": "0",
+      "isrecollect": "0",
+      "factor_trans": ""
+    },
+    {
+      "factorname": "母亲姓名",
+      "factortype": "1",
+      "factor_prompt": "",
+      "factoruse": "",
+      "ordernum": 2,
+      "remark": "",
+      "is_usermsg": "0",
+      "isrecollect": "0",
+      "factor_trans": ""
+    },
+    {
+      "factorname": "姓名",
+      "factortype": "1",
+      "factor_prompt": "",
+      "factoruse": "",
+      "ordernum": 3,
+      "remark": "",
+      "is_usermsg": "0",
+      "isrecollect": "0",
+      "factor_trans": ""
+    },
+    {
+      "factorname": "证件号码",
+      "factortype": "1",
+      "factor_prompt": "",
+      "factoruse": "",
+      "ordernum": 4,
+      "remark": "",
+      "is_usermsg": "0",
+      "isrecollect": "0",
+      "factor_trans": ""
+    },
+    {
+      "factorname": "有效期限",
+      "factortype": "1",
+      "factor_prompt": "",
+      "factoruse": "",
+      "ordernum": 5,
+      "remark": "",
+      "is_usermsg": "0",
+      "isrecollect": "0",
+      "factor_trans": ""
+    }
+  ],
+  "promptGroups": []
+}

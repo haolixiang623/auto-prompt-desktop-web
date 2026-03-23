@@ -1,0 +1,40 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm run tauri:dev)",
+      "Bash(npm install)",
+      "Bash(npm run dev)",
+      "Bash(lsof -i :1420)",
+      "Bash(kill -9 60852)",
+      "Bash(curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs)",
+      "Bash(sh -s -- -y)",
+      "Bash(source \"$HOME/.cargo/env\")",
+      "Bash(pkill -f \"vite\")",
+      "Bash(curl -sL \"https://raw.githubusercontent.com/tauri-apps/tauri/dev/tooling/cli/templates/app/src-tauri/icons/32x32.png\" -o 32x32.png)",
+      "Bash(curl -sL \"https://raw.githubusercontent.com/tauri-apps/tauri/dev/tooling/cli/templates/app/src-tauri/icons/128x128.png\" -o 128x128.png)",
+      "Bash(curl -sL \"https://raw.githubusercontent.com/tauri-apps/tauri/dev/tooling/cli/templates/app/src-tauri/icons/icon.icns\" -o icon.icns)",
+      "Bash(curl -sL \"https://raw.githubusercontent.com/tauri-apps/tauri/dev/tooling/cli/templates/app/src-tauri/icons/icon.ico\" -o icon.ico)",
+      "Bash(curl -sL \"https://raw.githubusercontent.com/tauri-apps/tauri/dev/tooling/cli/templates/app/src-tauri/icons/128x128%402x.png\" -o 128x128@2x.png)",
+      "Bash(python3 -c \":*)",
+      "Bash(pkill -f \"tauri\")",
+      "Bash(pkill -f \"tauri\\\\|auto-prompt-app\\\\|vite\")",
+      "Bash(export HOME=/Users/gooddream)",
+      "Bash(. \"$HOME/.cargo/env\")",
+      "Read(//Users/gooddream/Desktop/projects/auto-prompt-desktop/**)",
+      "Bash(xargs kill -9)",
+      "Bash(pkill -f \"tauri\\\\|auto-prompt-app\")",
+      "Bash(pip install openpyxl)",
+      "Bash(pip install openpyxl --break-system-packages)"
+    ],
+    "additionalDirectories": [
+      "/Users/gooddream/Desktop/projects/auto-prompt-desktop/src-tauri/icons"
+    ]
+  },
+  "api": {
+    "openai": {
+      "apiKey": "sk-0a66c03f4178cc59b9f9fb760bb3f5b6",
+      "baseURL": "https://api.asxs.top/v1",
+      "model": "gpt-5.4"
+    }
+  }
+}

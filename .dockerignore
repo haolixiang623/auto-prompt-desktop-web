@@ -1,0 +1,8 @@
+.git
+.github
+node_modules
+dist
+server/target
+src-tauri/target
+.runtime-data
+.DS_Store
