@@ -233,6 +233,28 @@ pub fn clear_llm_logs(log_store: &LlmLogStore) {
     log_store.clear();
 }
 
+fn append_llm_log_from_line(log_store: &LlmLogStore, line: &str, default_scene: &str) -> bool {
+    let normalized = line.trim_start_matches('\u{feff}');
+    let Some(marker_index) = normalized.find("__LLM_LOG__:") else {
+        return false;
+    };
+    let json_str = &normalized[(marker_index + "__LLM_LOG__:".len())..];
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(json_str) else {
+        return false;
+    };
+
+    log_store.append(LlmLogEntry::now(
+        value["model"].as_str().unwrap_or("").to_string(),
+        value["scene"].as_str().unwrap_or(default_scene).to_string(),
+        value["prompt_summary"].as_str().unwrap_or("").to_string(),
+        value["response_summary"].as_str().unwrap_or("").to_string(),
+        value["elapsed_s"].as_f64(),
+        value["success"].as_bool().unwrap_or(true),
+        value["error"].as_str().map(ToOwned::to_owned),
+    ));
+    true
+}
+
 pub fn check_environment(runtime: &RuntimeContext) -> Result<EnvStatus, String> {
     let python_info = check_python_availability(runtime);
     let python_cmd = runtime.python_command();
@@ -570,7 +592,7 @@ print(json.dumps(results, ensure_ascii=False))
         path = factors_path.to_string_lossy().replace('\\', "\\\\"),
     );
 
-    let output = Command::new(runtime.python_command())
+    let output = runtime.python_process()
         .arg("-c")
         .arg(script)
         .output()
@@ -633,7 +655,7 @@ print('\n'.join(seen))
 "#,
             path = path.to_string_lossy().replace('\\', "\\\\"),
         );
-        let output = Command::new(runtime.python_command())
+        let output = runtime.python_process()
             .arg("-c")
             .arg(script)
             .output()
@@ -704,7 +726,7 @@ pub fn generate_factor_json(
     logger: Logger,
 ) -> Result<Vec<FactorJsonResult>, String> {
     let skill_path = runtime.resolve_skill_path("factor-json-generator/generate_factor_json.py")?;
-    let mut child = Command::new(runtime.python_command())
+    let mut child = runtime.python_process()
         .arg(skill_path)
         .arg(&work_dir)
         .arg("--group-size")
@@ -793,7 +815,7 @@ pub fn generate_prompt(
         .unwrap_or_else(|| "{}".to_string());
     let extract_god_prompt = settings.load().map(|s| s.extract_god_prompt).unwrap_or_default();
 
-    let mut cmd = Command::new(runtime.python_command());
+    let mut cmd = runtime.python_process();
     cmd.arg("-u").arg(skill_path).arg(&script_work_dir);
     if let Some(material) = &material_name {
         cmd.arg(material);
@@ -877,7 +899,7 @@ pub fn verify_extraction(
             pdf = pdf_path.to_string_lossy().replace('\\', "\\\\"),
             out = out_png.to_string_lossy().replace('\\', "\\\\"),
         );
-        let conversion = Command::new(runtime.python_command())
+        let conversion = runtime.python_process()
             .arg("-c")
             .arg(convert_script)
             .output()
@@ -945,7 +967,7 @@ print(resp.choices[0].message.content)
         image_path = image_path.to_string_lossy().replace('\\', "\\\\"),
     );
 
-    let mut child = Command::new(runtime.python_command())
+    let mut child = runtime.python_process()
         .arg("-c")
         .arg(script)
         .env("DASHSCOPE_API_KEY", settings.get_api_key()?)
@@ -1044,7 +1066,7 @@ pub fn classify_materials(
         emit_log(&logger, format!("[分类] 额外参数: {extra_params}"));
     }
 
-    let mut child = Command::new(runtime.python_command())
+    let mut child = runtime.python_process()
         .arg("-u")
         .arg(skill_path)
         .arg(&work_dir)
@@ -1063,9 +1085,14 @@ pub fn classify_materials(
     let stdout_logger = logger.clone();
     let stderr_logger = logger.clone();
     let llm_log_store = llm_logs.clone();
+    let _stderr_llm_log_store = llm_logs.clone();
     let stdout_handle = thread::spawn(move || {
         let mut lines = Vec::new();
         for line in BufReader::new(stdout).lines().flatten() {
+            if append_llm_log_from_line(&llm_log_store, &line, "鏉愭枡鍒嗙被") {
+                lines.push(line);
+                continue;
+            }
             if let Some(json_str) = line.strip_prefix("__LLM_LOG__:") {
                 if let Ok(value) = serde_json::from_str::<serde_json::Value>(json_str) {
                     llm_log_store.append(LlmLogEntry::now(
@@ -1168,7 +1195,7 @@ pub fn test_classify_prompt(
     let tmp_path = PathBuf::from(&work_dir).join(format!(".test_prompt_{prompt_type}.txt"));
     fs::write(&tmp_path, &prompt_content).map_err(|error| format!("写入临时文件失败: {error}"))?;
 
-    let mut child = Command::new(runtime.python_command())
+    let mut child = runtime.python_process()
         .arg("-u")
         .arg(skill_path)
         .arg(format!("--test-prompt={prompt_type}"))
@@ -1237,7 +1264,7 @@ pub fn generate_review_rule(
         .map(|model| params_to_json(&model.params))
         .unwrap_or_else(|| "{}".to_string());
 
-    let mut cmd = Command::new(runtime.python_command());
+    let mut cmd = runtime.python_process();
     cmd.arg("-u")
         .arg(skill_path)
         .arg(&work_dir)
@@ -1266,9 +1293,14 @@ pub fn generate_review_rule(
     let stdout_logger = logger.clone();
     let stderr_logger = logger.clone();
     let llm_log_store = llm_logs.clone();
+    let stderr_llm_log_store = llm_logs.clone();
     let stdout_handle = thread::spawn(move || {
         let mut lines = Vec::new();
         for line in BufReader::new(stdout).lines().flatten() {
+            if append_llm_log_from_line(&llm_log_store, &line, "瀹℃煡瑙勫垯鐢熸垚") {
+                lines.push(line);
+                continue;
+            }
             if let Some(json_str) = line.strip_prefix("__LLM_LOG__:") {
                 if let Ok(value) = serde_json::from_str::<serde_json::Value>(json_str) {
                     llm_log_store.append(LlmLogEntry::now(
@@ -1290,6 +1322,23 @@ pub fn generate_review_rule(
     });
     let stderr_handle = thread::spawn(move || {
         for line in BufReader::new(stderr).lines().flatten() {
+            if append_llm_log_from_line(&stderr_llm_log_store, &line, "瀹℃煡瑙勫垯鐢熸垚") {
+                continue;
+            }
+            if let Some(json_str) = line.strip_prefix("__LLM_LOG__:") {
+                if let Ok(value) = serde_json::from_str::<serde_json::Value>(json_str) {
+                    stderr_llm_log_store.append(LlmLogEntry::now(
+                        value["model"].as_str().unwrap_or("").to_string(),
+                        value["scene"].as_str().unwrap_or("瀹℃煡瑙勫垯鐢熸垚").to_string(),
+                        value["prompt_summary"].as_str().unwrap_or("").to_string(),
+                        value["response_summary"].as_str().unwrap_or("").to_string(),
+                        value["elapsed_s"].as_f64(),
+                        value["success"].as_bool().unwrap_or(true),
+                        value["error"].as_str().map(ToOwned::to_owned),
+                    ));
+                    continue;
+                }
+            }
             emit_log(&stderr_logger, format!("[stderr] {line}"));
         }
     });

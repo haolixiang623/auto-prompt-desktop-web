@@ -71,6 +71,12 @@ impl RuntimeContext {
 
         "python3".to_string()
     }
+
+    pub fn python_process(&self) -> Command {
+        let mut command = Command::new(self.python_command());
+        configure_python_stdio(&mut command);
+        command
+    }
 }
 
 fn bundled_python_candidates(repo_root: &Path) -> Vec<PathBuf> {
@@ -103,6 +109,12 @@ fn command_works(path: &Path) -> bool {
         .output()
         .map(|output| output.status.success())
         .unwrap_or(false)
+}
+
+fn configure_python_stdio(command: &mut Command) {
+    command
+        .env("PYTHONIOENCODING", "utf-8")
+        .env("PYTHONUTF8", "1");
 }
 
 pub fn ensure_parent_dir(path: &Path) -> Result<(), String> {

@@ -77,6 +77,13 @@ struct CaseImportTxtRequest {
 async fn main() {
     let runtime = RuntimeContext::discover();
     let paths = AppPaths::from_env();
+    let settings = SettingsStore::new(
+        paths.settings_path.clone(),
+        runtime.repo_root.join("auto-prompt.project.json"),
+    );
+    if let Err(error) = settings.migrate_legacy_if_needed() {
+        eprintln!("failed to migrate settings: {error}");
+    }
     for dir in [&paths.data_dir, &paths.workspace_root, &paths.upload_root, &paths.task_root] {
         if let Err(error) = fs::create_dir_all(dir) {
             panic!("failed to create {}: {error}", dir.display());
@@ -84,7 +91,7 @@ async fn main() {
     }
 
     let state = WebState {
-        settings: SettingsStore::new(paths.settings_path.clone()),
+        settings,
         workspaces: WorkspaceService::new(paths.clone()),
         tasks: TaskStore::new(paths.task_root.clone()),
         llm_logs: LlmLogStore::new(),
