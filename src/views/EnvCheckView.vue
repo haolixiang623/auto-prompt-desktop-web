@@ -213,7 +213,7 @@
                 {{ apiKeyConfigured ? '已配置' : '未配置' }}
               </span>
               <router-link
-                v-if="!apiKeyConfigured"
+                v-if="!apiKeyConfigured && canManageSettings"
                 to="/settings"
                 class="text-xs px-2.5 py-1 bg-blue-50 text-blue-600 rounded-lg hover:bg-blue-100 transition-colors font-medium"
               >
@@ -243,6 +243,7 @@
 <script setup>
 import { ref, computed, onMounted } from 'vue'
 import { invoke } from '@tauri-apps/api/tauri'
+import { authState } from '../services/authState.js'
 
 // ── 状态徽章子组件 ──────────────────────────────────────────
 const StatusBadge = {
@@ -267,6 +268,7 @@ const installing = ref(false)
 const installLog = ref('')
 const installSuccess = ref(true)
 const apiKeyConfigured = ref(false)
+const canManageSettings = computed(() => authState.user?.role === 'admin')
 
 // ── 计算属性 ────────────────────────────────────────────────
 const allGood = computed(() => {
@@ -290,7 +292,7 @@ async function runCheck() {
       invoke('load_settings')
     ])
     envStatus.value = status
-    apiKeyConfigured.value = !!(settings.api_key && settings.api_key.trim())
+    apiKeyConfigured.value = Boolean(settings.api_key_configured || (settings.api_key && settings.api_key.trim()))
   } catch (e) {
     checkError.value = String(e)
   } finally {

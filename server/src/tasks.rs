@@ -36,6 +36,7 @@ pub struct Task {
     pub kind: TaskKind,
     pub status: TaskStatus,
     pub progress: Option<u8>,
+    pub owner_user_id: String,
     pub workspace_id: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
@@ -60,26 +61,7 @@ impl TaskStore {
         fs::create_dir_all(&task_root).expect("failed to create task store directory");
 
         let mut records = HashMap::new();
-        if let Ok(entries) = fs::read_dir(&task_root) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.extension().and_then(|extension| extension.to_str()) != Some("json") {
-                    continue;
-                }
-
-                match fs::read_to_string(&path)
-                    .ok()
-                    .and_then(|content| serde_json::from_str::<TaskRecord>(&content).ok())
-                {
-                    Some(record) => {
-                        records.insert(record.task.id.clone(), record);
-                    }
-                    None => {
-                        eprintln!("failed to restore task from {}", path.display());
-                    }
-                }
-            }
-        }
+        restore_records(&task_root, &mut records);
 
         Self {
             inner: Arc::new(RwLock::new(records)),
@@ -87,13 +69,14 @@ impl TaskStore {
         }
     }
 
-    pub fn create(&self, kind: TaskKind, workspace_id: Option<String>) -> Task {
+    pub fn create(&self, kind: TaskKind, owner_user_id: String, workspace_id: Option<String>) -> Task {
         let now = Utc::now();
         let task = Task {
             id: Uuid::new_v4().to_string(),
             kind,
             status: TaskStatus::Pending,
             progress: Some(0),
+            owner_user_id,
             workspace_id,
             created_at: now,
             updated_at: now,
@@ -117,14 +100,20 @@ impl TaskStore {
         task
     }
 
-    pub fn get(&self, task_id: &str) -> Option<Task> {
+    pub fn get(&self, task_id: &str, owner_user_id: &str) -> Option<Task> {
         let guard = self.inner.read().ok()?;
-        guard.get(task_id).map(|record| record.task.clone())
+        guard
+            .get(task_id)
+            .filter(|record| record.task.owner_user_id == owner_user_id)
+            .map(|record| record.task.clone())
     }
 
-    pub fn logs(&self, task_id: &str) -> Option<Vec<String>> {
+    pub fn logs(&self, task_id: &str, owner_user_id: &str) -> Option<Vec<String>> {
         let guard = self.inner.read().ok()?;
-        guard.get(task_id).map(|record| record.logs.clone())
+        guard
+            .get(task_id)
+            .filter(|record| record.task.owner_user_id == owner_user_id)
+            .map(|record| record.logs.clone())
     }
 
     pub fn mark_running(&self, task_id: &str, progress: Option<u8>) -> Result<(), String> {
@@ -188,11 +177,47 @@ impl TaskStore {
     fn persist(&self, record: &TaskRecord) -> Result<(), String> {
         let task_path = self.task_path(&record.task.id);
         let content = serde_json::to_vec_pretty(record).map_err(|error| error.to_string())?;
+        if let Some(parent) = task_path.parent() {
+            fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+        }
         fs::write(task_path, content).map_err(|error| error.to_string())
     }
 
     fn task_path(&self, task_id: &str) -> PathBuf {
-        self.task_root.join(format!("{task_id}.json"))
+        let owner_user_id = self
+            .inner
+            .read()
+            .ok()
+            .and_then(|guard| guard.get(task_id).map(|record| record.task.owner_user_id.clone()))
+            .unwrap_or_else(|| "unknown".to_string());
+        self.task_root.join(owner_user_id).join(format!("{task_id}.json"))
+    }
+}
+
+fn restore_records(task_root: &PathBuf, records: &mut HashMap<String, TaskRecord>) {
+    if let Ok(entries) = fs::read_dir(task_root) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                restore_records(&path, records);
+                continue;
+            }
+            if path.extension().and_then(|extension| extension.to_str()) != Some("json") {
+                continue;
+            }
+
+            match fs::read_to_string(&path)
+                .ok()
+                .and_then(|content| serde_json::from_str::<TaskRecord>(&content).ok())
+            {
+                Some(record) => {
+                    records.insert(record.task.id.clone(), record);
+                }
+                None => {
+                    eprintln!("failed to restore task from {}", path.display());
+                }
+            }
+        }
     }
 }
 
@@ -216,21 +241,22 @@ mod tests {
     fn task_store_tracks_lifecycle_and_logs() {
         let task_root = temp_task_root("lifecycle");
         let store = TaskStore::new(task_root.clone());
-        let task = store.create(TaskKind::Generate, Some("ws-1".to_string()));
+        let task = store.create(TaskKind::Generate, "user-1".to_string(), Some("ws-1".to_string()));
 
         assert_eq!(task.kind, TaskKind::Generate);
         assert_eq!(task.status, TaskStatus::Pending);
+        assert_eq!(task.owner_user_id, "user-1");
         assert_eq!(task.workspace_id.as_deref(), Some("ws-1"));
 
         store.mark_running(&task.id, Some(10)).unwrap();
         store.append_log(&task.id, "started".to_string()).unwrap();
         store.complete(&task.id, serde_json::json!({"ok": true})).unwrap();
 
-        let stored = store.get(&task.id).unwrap();
+        let stored = store.get(&task.id, "user-1").unwrap();
         assert_eq!(stored.status, TaskStatus::Succeeded);
         assert_eq!(stored.progress, Some(100));
         assert_eq!(stored.result, Some(serde_json::json!({"ok": true})));
-        assert_eq!(store.logs(&task.id).unwrap(), vec!["started".to_string()]);
+        assert_eq!(store.logs(&task.id, "user-1").unwrap(), vec!["started".to_string()]);
 
         fs::remove_dir_all(task_root).unwrap();
     }
@@ -239,18 +265,19 @@ mod tests {
     fn task_store_restores_persisted_records() {
         let task_root = temp_task_root("restore");
         let first_store = TaskStore::new(task_root.clone());
-        let task = first_store.create(TaskKind::Classify, Some("ws-2".to_string()));
+        let task = first_store.create(TaskKind::Classify, "user-2".to_string(), Some("ws-2".to_string()));
         first_store.mark_running(&task.id, Some(30)).unwrap();
         first_store.append_log(&task.id, "running".to_string()).unwrap();
         first_store.fail(&task.id, "boom".to_string()).unwrap();
 
         let restored_store = TaskStore::new(task_root.clone());
-        let restored = restored_store.get(&task.id).unwrap();
+        let restored = restored_store.get(&task.id, "user-2").unwrap();
 
         assert_eq!(restored.kind, TaskKind::Classify);
         assert_eq!(restored.status, TaskStatus::Failed);
+        assert_eq!(restored.owner_user_id, "user-2");
         assert_eq!(restored.workspace_id.as_deref(), Some("ws-2"));
-        assert_eq!(restored_store.logs(&task.id).unwrap(), vec!["running".to_string()]);
+        assert_eq!(restored_store.logs(&task.id, "user-2").unwrap(), vec!["running".to_string()]);
 
         fs::remove_dir_all(task_root).unwrap();
     }

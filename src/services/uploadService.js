@@ -1,4 +1,5 @@
 import { apiClient } from './apiClient.js'
+import { getScopedStorageItem, setScopedStorageItem } from './authState.js'
 import { emitEvent } from './eventBus.js'
 
 const WORKSPACE_REGISTRY_KEY = 'auto-prompt.workspace-registry'
@@ -11,7 +12,7 @@ function loadWorkspaceRegistry() {
   if (typeof window === 'undefined') return []
 
   try {
-    const raw = window.localStorage.getItem(WORKSPACE_REGISTRY_KEY)
+    const raw = getScopedStorageItem(WORKSPACE_REGISTRY_KEY)
     if (!raw) return []
     const data = JSON.parse(raw)
     return Array.isArray(data) ? data : []
@@ -25,7 +26,7 @@ function persistWorkspaceRegistry() {
   if (typeof window === 'undefined') return
 
   try {
-    window.localStorage.setItem(
+    setScopedStorageItem(
       WORKSPACE_REGISTRY_KEY,
       JSON.stringify(Array.from(workspaceRegistry.entries())),
     )

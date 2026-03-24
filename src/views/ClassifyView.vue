@@ -616,6 +616,7 @@
 import { ref, computed, onMounted, onUnmounted, onActivated, nextTick } from 'vue'
 import { invoke } from '@tauri-apps/api/tauri'
 import { listen } from '@tauri-apps/api/event'
+import { getScopedStorageItem, removeScopedStorageItem, setScopedStorageItem } from '../services/authState.js'
 
 const steps = [
   { title: '上传工作区与配置', active: '配置中', done: '已选工作区', pending: '待配置' },
@@ -692,7 +693,7 @@ onMounted(async () => {
   })
 
   if (!workDir.value && typeof window !== 'undefined') {
-    const storedWorkDir = window.localStorage.getItem(WORKDIR_STORAGE_KEY)
+    const storedWorkDir = getScopedStorageItem(WORKDIR_STORAGE_KEY)
     if (storedWorkDir) {
       workDir.value = storedWorkDir
       addLog(`已恢复上次工作区: ${storedWorkDir}`, 'info')
@@ -717,9 +718,9 @@ function addLog(message, type = 'info') {
 function persistWorkDir() {
   if (typeof window === 'undefined') return
   if (workDir.value) {
-    window.localStorage.setItem(WORKDIR_STORAGE_KEY, workDir.value)
+    setScopedStorageItem(WORKDIR_STORAGE_KEY, workDir.value)
   } else {
-    window.localStorage.removeItem(WORKDIR_STORAGE_KEY)
+    removeScopedStorageItem(WORKDIR_STORAGE_KEY)
   }
 }
 

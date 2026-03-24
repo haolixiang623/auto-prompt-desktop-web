@@ -410,9 +410,10 @@ async function saveSettings() {
   saving.value = true
   clearTimeout(saveStatusTimer)
   try {
+    const selectedDefaultModel = models.value.find(m => m.id === defaultModelId.value)
     await invoke('save_settings', { settings: {
       api_key: apiKey.value,
-      model_name: modelName.value,
+      model_name: selectedDefaultModel?.model_id || modelName.value,
       default_model_id: defaultModelId.value,
       models: models.value,
       god_prompt: godPrompt.value,

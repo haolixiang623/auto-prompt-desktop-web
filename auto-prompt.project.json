@@ -1,5 +1,5 @@
 {
-  "model_name": "qwen-vl-max",
+  "model_name": "qwen3.5-35b-a3b",
   "default_model_id": "1774255494279",
   "models": [
     {

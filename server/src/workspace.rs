@@ -49,9 +49,14 @@ impl WorkspaceService {
         Self { paths }
     }
 
-    pub fn create_workspace(&self, name: Option<String>, uploads: Vec<UploadedBlob>) -> Result<WorkspaceSummary, String> {
+    pub fn create_workspace(
+        &self,
+        user_id: &str,
+        name: Option<String>,
+        uploads: Vec<UploadedBlob>,
+    ) -> Result<WorkspaceSummary, String> {
         let id = Uuid::new_v4().to_string();
-        let root = self.paths.workspace_root.join(&id);
+        let root = self.paths.user_workspace_root(user_id).join(&id);
         fs::create_dir_all(&root).map_err(|error| format!("创建工作区失败: {error}"))?;
         let shared_prefix = shared_workspace_prefix(&uploads);
 
@@ -63,14 +68,17 @@ impl WorkspaceService {
             fs::write(&target_path, upload.bytes).map_err(|error| format!("保存上传文件失败: {error}"))?;
         }
 
-        self.get_workspace(&id).map(|mut summary| {
+        self.get_workspace(user_id, &id).map(|mut summary| {
             summary.name = name.unwrap_or_else(|| format!("workspace-{id}"));
             summary
         })
     }
 
-    pub fn save_temp_uploads(&self, uploads: Vec<UploadedBlob>) -> Result<Vec<String>, String> {
-        let upload_root = self.paths.upload_root.join(Uuid::new_v4().to_string());
+    pub fn save_temp_uploads(&self, user_id: &str, uploads: Vec<UploadedBlob>) -> Result<Vec<String>, String> {
+        let upload_root = self
+            .paths
+            .user_upload_root(user_id)
+            .join(Uuid::new_v4().to_string());
         fs::create_dir_all(&upload_root).map_err(|error| format!("创建上传目录失败: {error}"))?;
 
         let mut stored_paths = Vec::new();
@@ -85,8 +93,8 @@ impl WorkspaceService {
         Ok(stored_paths)
     }
 
-    pub fn get_workspace(&self, workspace_id: &str) -> Result<WorkspaceSummary, String> {
-        let root = self.paths.workspace_root.join(workspace_id);
+    pub fn get_workspace(&self, user_id: &str, workspace_id: &str) -> Result<WorkspaceSummary, String> {
+        let root = self.paths.user_workspace_root(user_id).join(workspace_id);
         if !root.exists() {
             return Err("工作区不存在".to_string());
         }

@@ -1,3 +1,5 @@
+import { clearAuthState, getAuthToken } from './authState.js'
+
 const DEFAULT_BASE = import.meta?.env?.VITE_API_BASE_URL || ''
 
 function withQuery(path, query) {
@@ -15,6 +17,11 @@ function withQuery(path, query) {
 async function request(path, { method = 'GET', body, formData, query } = {}) {
   const url = `${DEFAULT_BASE}${withQuery(path, query)}`
   const options = { method, headers: {} }
+  const authToken = getAuthToken()
+
+  if (authToken) {
+    options.headers.Authorization = `Bearer ${authToken}`
+  }
 
   if (formData) {
     options.body = formData
@@ -30,6 +37,13 @@ async function request(path, { method = 'GET', body, formData, query } = {}) {
     : await response.text().catch(() => '')
 
   if (!response.ok) {
+    if (response.status === 401 && path !== '/api/auth/login') {
+      clearAuthState()
+      if (typeof window !== 'undefined' && !window.location.pathname.startsWith('/login')) {
+        const redirect = encodeURIComponent(`${window.location.pathname}${window.location.search}`)
+        window.location.replace(`/login?redirect=${redirect}`)
+      }
+    }
     const message = typeof payload === 'string'
       ? payload
       : payload?.error || payload?.message || response.statusText
@@ -56,6 +70,10 @@ export const apiClient = {
     return request(path, { method: 'POST', formData })
   },
   open(path, query) {
-    window.open(`${DEFAULT_BASE}${withQuery(path, query)}`, '_blank', 'noopener,noreferrer')
+    const authToken = getAuthToken()
+    const finalQuery = authToken
+      ? { ...(query || {}), authToken }
+      : query
+    window.open(`${DEFAULT_BASE}${withQuery(path, finalQuery)}`, '_blank', 'noopener,noreferrer')
   }
 }

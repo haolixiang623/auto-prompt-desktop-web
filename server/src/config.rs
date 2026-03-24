@@ -25,6 +25,8 @@ pub struct ModelConfig {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct AppSettings {
     pub api_key: String,
+    #[serde(default)]
+    pub api_key_configured: bool,
     #[serde(default = "default_model_name")]
     pub model_name: String,
     #[serde(default)]
@@ -99,9 +101,10 @@ impl SettingsStore {
     }
 
     pub fn save(&self, settings: &AppSettings) -> Result<(), String> {
-        self.save_project_settings(&ProjectSettings::from_app_settings(settings))?;
+        let normalized = Self::normalize_app_settings(settings);
+        self.save_project_settings(&ProjectSettings::from_app_settings(&normalized))?;
         self.save_local_settings(&LocalSettings {
-            api_key: settings.api_key.clone(),
+            api_key: normalized.api_key.clone(),
         })
     }
 
@@ -234,12 +237,34 @@ except Exception as error:
             .or_else(|_| serde_json::from_str::<AppSettings>(&content).map(|settings| ProjectSettings::from_app_settings(&settings)))
             .map_err(|error| format!("解析项目配置失败: {error}"))
     }
+
+    fn normalize_app_settings(settings: &AppSettings) -> AppSettings {
+        let mut normalized = settings.clone();
+        normalized.api_key_configured = !normalized.api_key.is_empty();
+        if let Some(default_model) = normalized
+            .models
+            .iter()
+            .find(|model| model.id == normalized.default_model_id)
+        {
+            normalized.model_name = default_model.model_id.clone();
+        } else if normalized.default_model_id.is_empty() && !normalized.models.is_empty() {
+            normalized.default_model_id = normalized.models[0].id.clone();
+            normalized.model_name = normalized.models[0].model_id.clone();
+        }
+
+        if normalized.model_name.is_empty() {
+            normalized.model_name = default_model_name();
+        }
+
+        normalized
+    }
 }
 
 impl Default for AppSettings {
     fn default() -> Self {
         Self {
             api_key: String::new(),
+            api_key_configured: false,
             model_name: default_model_name(),
             default_model_id: "1".to_string(),
             models: default_models(),
@@ -275,8 +300,10 @@ impl ProjectSettings {
     }
 
     fn into_app_settings(self, api_key: String) -> AppSettings {
+        let api_key_configured = !api_key.is_empty();
         AppSettings {
             api_key,
+            api_key_configured,
             model_name: self.model_name,
             default_model_id: self.default_model_id,
             models: self.models,
@@ -394,6 +421,7 @@ mod tests {
     fn sample_settings() -> AppSettings {
         AppSettings {
             api_key: "secret-key".to_string(),
+            api_key_configured: true,
             model_name: "qwen-vl-max".to_string(),
             default_model_id: "custom".to_string(),
             models: vec![ModelConfig {
@@ -429,7 +457,9 @@ mod tests {
 
         let loaded = store.load().unwrap();
         assert_eq!(loaded.api_key, "secret-key");
+        assert!(loaded.api_key_configured);
         assert_eq!(loaded.default_model_id, "custom");
+        assert_eq!(loaded.model_name, "qwen3.5-35b-a3b");
         assert_eq!(loaded.models.len(), 1);
 
         let _ = fs::remove_dir_all(root);
@@ -455,6 +485,8 @@ mod tests {
 
         let loaded = store.load().unwrap();
         assert_eq!(loaded.api_key, "secret-key");
+        assert!(loaded.api_key_configured);
+        assert_eq!(loaded.model_name, "qwen3.5-35b-a3b");
         assert_eq!(loaded.models[0].model_id, "qwen3.5-35b-a3b");
 
         let _ = fs::remove_dir_all(root);
