@@ -74,17 +74,68 @@
           <!-- 工作区选择 -->
           <div class="bg-white rounded-xl border p-5 space-y-3">
             <div class="text-sm font-semibold text-gray-700">材料工作区</div>
-            <div class="flex gap-2">
+            <div class="flex gap-2 items-start">
               <input v-model="workDir" type="text" placeholder="上传后会显示服务端工作区路径"
                 class="flex-1 px-3 py-2 border rounded-lg text-sm bg-gray-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-300" readonly />
               <button @click="selectWorkDir"
                 class="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 text-sm transition font-medium">
                 上传文件夹...
               </button>
+              <div
+                class="relative flex-shrink-0"
+                @mouseenter="showStructureGuide = true"
+                @mouseleave="showStructureGuide = false"
+              >
+                <button
+                  type="button"
+                  class="w-10 h-10 rounded-lg border border-red-200 bg-red-50 text-red-600 flex items-center justify-center hover:bg-red-100 transition"
+                  aria-label="查看审查规则目录要求"
+                  @click="showStructureGuide = !showStructureGuide"
+                >
+                  <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M12 22C6.477 22 2 17.523 2 12S6.477 2 12 2s10 4.477 10 10-4.477 10-10 10z" />
+                  </svg>
+                </button>
+
+                <Transition name="structure-guide">
+                  <div
+                    v-if="showStructureGuide"
+                    class="absolute right-0 top-12 z-30 w-80 rounded-2xl border border-red-200 bg-white p-4 shadow-2xl"
+                  >
+                    <div class="flex items-start justify-between gap-3">
+                      <div>
+                        <p class="text-sm font-semibold text-slate-800">审查规则目录示意</p>
+                        <p class="text-xs text-slate-500 mt-1">这个步骤最关键的是 Excel 位置和文件名</p>
+                      </div>
+                      <span class="px-2 py-1 rounded-full bg-red-50 text-red-600 text-[11px] font-medium">关键要求</span>
+                    </div>
+
+                    <div class="mt-3 rounded-xl border border-red-200 bg-red-50/60 p-3">
+                      <div class="text-[11px] text-red-500 mb-2 font-medium">必须满足</div>
+                      <div class="space-y-1.5 font-mono text-xs text-slate-700 leading-5">
+                        <div class="font-semibold text-slate-800">工作区/</div>
+                        <div class="pl-3">└─ <span class="font-semibold text-red-600">factors.xlsx</span></div>
+                      </div>
+                    </div>
+
+                    <div class="mt-3 space-y-2 text-xs text-slate-600 leading-5">
+                      <p>1. <span class="font-semibold text-red-600">factors.xlsx</span> 必须放在 <span class="font-semibold text-red-600">工作区根目录</span></p>
+                      <p>2. 文件名必须就是 <span class="font-semibold text-red-600">factors.xlsx</span>，不要改名</p>
+                      <p>3. 这个步骤主要读取 Excel 审查要点，<span class="font-semibold text-red-600">不依赖材料图片</span></p>
+                    </div>
+                  </div>
+                </Transition>
+              </div>
             </div>
             <p class="text-xs text-gray-400">
               审查要点规则说明列用 <code class="bg-gray-100 px-1 rounded">#材料名称-字段名称#</code> 引用要素；空审查要点名称行自动跳过
             </p>
+            <div class="inline-flex items-center gap-1.5 rounded-lg bg-red-50 px-2.5 py-1 text-xs text-red-600">
+              <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01M5.07 19h13.86c1.54 0 2.5-1.67 1.73-3L13.73 4c-.77-1.33-2.69-1.33-3.46 0L3.34 16c-.77 1.33.19 3 1.73 3z" />
+              </svg>
+              关键要求：根目录必须有 factors.xlsx，鼠标移到右侧图标可查看示意
+            </div>
           </div>
 
           <!-- 推理模型配置 -->
@@ -398,6 +449,7 @@ function goStepNav(n) {
 
 // ─── 状态 ─────────────────────────────────────────
 const workDir     = ref('')
+const showStructureGuide = ref(false)
 const isRunning   = ref(false)
 const useLlm      = ref(true)        // 默认开启LLM
 const availableModels = ref([])
@@ -776,6 +828,7 @@ async function regenerateKeypoint(material, idx) {
 
 function clear() {
   workDir.value = ''
+  showStructureGuide.value = false
   persistWorkDir()
   logs.value = []
   results.value = []
@@ -787,3 +840,16 @@ function clear() {
   copiedItem.value = null
 }
 </script>
+
+<style scoped>
+.structure-guide-enter-active,
+.structure-guide-leave-active {
+  transition: opacity 0.18s ease, transform 0.18s ease;
+}
+
+.structure-guide-enter-from,
+.structure-guide-leave-to {
+  opacity: 0;
+  transform: translateY(-6px);
+}
+</style>

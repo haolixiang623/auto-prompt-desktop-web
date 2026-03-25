@@ -551,55 +551,31 @@ pub fn read_factors(work_dir: String, runtime: &RuntimeContext) -> Result<Vec<Fa
             .ok_or("未找到 factors.xlsx 文件".to_string())?
     };
 
-    let script = format!(
-        r#"
-import json, openpyxl
-wb = openpyxl.load_workbook(r'{path}', read_only=True, data_only=True)
-ws = wb.active
-headers = [str(c.value or '').strip() for c in next(ws.iter_rows(min_row=1, max_row=1, values_only=False))]
-is_extended = '事项' in (headers[0] if headers else '') or (len(headers) > 1 and '材料名称' in headers[1])
-results = []
-if is_extended:
-    current_material = None
-    for row in ws.iter_rows(min_row=2, values_only=True):
-        raw_mat = row[1] if len(row) > 1 else None
-        if raw_mat:
-            s = str(raw_mat).strip()
-            if s and '\n' not in s and len(s) < 60:
-                current_material = s
-        if not current_material:
-            continue
-        factor_name = str(row[3]).strip() if len(row) > 3 and row[3] else ''
-        factor_usage = str(row[6]).strip() if len(row) > 6 and row[6] else ''
-        if factor_name and '\n' not in factor_name and len(factor_name) <= 50:
-            results.append({{'field_name': factor_name, 'field_code': '', 'description': factor_usage, 'required': True, 'data_type': 'string', 'material': current_material}})
-else:
-    current_material = None
-    for row in ws.iter_rows(min_row=2, values_only=True):
-        if not any(row):
-            continue
-        raw_mat = row[0] if row[0] else None
-        if raw_mat:
-            s = str(raw_mat).strip()
-            if s and '\n' not in s and len(s) < 60:
-                current_material = s
-        factor_name = str(row[1]).strip() if len(row) > 1 and row[1] else ''
-        factor_usage = str(row[2]).strip() if len(row) > 2 and row[2] else ''
-        if factor_name:
-            results.append({{'field_name': factor_name, 'field_code': '', 'description': factor_usage, 'required': True, 'data_type': 'string', 'material': current_material or ''}})
-print(json.dumps(results, ensure_ascii=False))
-"#,
-        path = factors_path.to_string_lossy().replace('\\', "\\\\"),
-    );
-
-    let output = runtime.python_process()
-        .arg("-c")
-        .arg(script)
+    let script_path = runtime.resolve_skill_path("doc-extract-prompt-gen/read_factors.py")?;
+    let output = runtime
+        .python_process()
+        .arg("-u")
+        .arg(script_path)
+        .arg(&factors_path)
         .output()
         .map_err(|error| format!("调用Python失败: {error}"))?;
 
-    serde_json::from_str::<Vec<Factor>>(String::from_utf8_lossy(&output.stdout).trim())
-        .map_err(|error| format!("解析要素失败: {error}"))
+    if !output.status.success() {
+        return Err(format!("读取要素失败: {}", combine_output(&output.stdout, &output.stderr)));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if stdout.is_empty() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(if stderr.is_empty() {
+            "读取要素失败: Python 未返回内容".to_string()
+        } else {
+            format!("读取要素失败: {stderr}")
+        });
+    }
+
+    serde_json::from_str::<Vec<Factor>>(&stdout)
+        .map_err(|error| format!("解析要素失败: {error}; output={stdout}"))
 }
 
 pub fn get_materials(work_dir: String) -> Result<Vec<MaterialInfo>, String> {
@@ -894,14 +870,12 @@ pub fn verify_extraction(
     } else if let Some(entry) = pdf_entry {
         let pdf_path = entry.path();
         let out_png = dir_path.join("__verify_img_tmp__.png");
-        let convert_script = format!(
-            "import fitz; doc = fitz.open(r'{pdf}'); page = doc[0]; pix = page.get_pixmap(matrix=fitz.Matrix(2,2)); pix.save(r'{out}'); doc.close(); print('ok')",
-            pdf = pdf_path.to_string_lossy().replace('\\', "\\\\"),
-            out = out_png.to_string_lossy().replace('\\', "\\\\"),
-        );
+        let convert_script = "import fitz, sys; doc = fitz.open(sys.argv[1]); page = doc[0]; pix = page.get_pixmap(matrix=fitz.Matrix(2,2)); pix.save(sys.argv[2]); doc.close(); print('ok')";
         let conversion = runtime.python_process()
             .arg("-c")
             .arg(convert_script)
+            .arg(&pdf_path)
+            .arg(&out_png)
             .output()
             .map_err(|error| format!("PDF转图片失败: {error}"))?;
         if !conversion.status.success() {
@@ -928,7 +902,7 @@ pub fn verify_extraction(
         .map(|model| params_to_json(&model.params))
         .unwrap_or_else(|| "{}".to_string());
 
-    let script = format!(r#"
+    let script = r#"
 import base64, json, os, sys, time
 from openai import OpenAI
 
@@ -938,38 +912,40 @@ if not api_key:
     sys.exit(1)
 
 model_name = os.environ.get('VERIFY_MODEL_NAME', 'qwen-vl-max')
-all_params = json.loads(os.environ.get('VERIFY_EXTRA_PARAMS', '{{}}'))
-body_keys = {{'enable_thinking', 'thinking_budget', 'translation_options', 'vl_high_resolution_images', 'search_options'}}
-extra = {{k: v for k, v in all_params.items() if k not in body_keys}}
-body = {{k: v for k, v in all_params.items() if k in body_keys}}
+all_params = json.loads(os.environ.get('VERIFY_EXTRA_PARAMS', '{}'))
+body_keys = {'enable_thinking', 'thinking_budget', 'translation_options', 'vl_high_resolution_images', 'search_options'}
+extra = {k: v for k, v in all_params.items() if k not in body_keys}
+body = {k: v for k, v in all_params.items() if k in body_keys}
 if body:
     extra['extra_body'] = body
 
-with open(r'{prompt_path}', 'r', encoding='utf-8') as f:
+prompt_path = sys.argv[1]
+image_path = sys.argv[2]
+
+with open(prompt_path, 'r', encoding='utf-8') as f:
     prompt = f.read()
-with open(r'{image_path}', 'rb') as f:
+with open(image_path, 'rb') as f:
     b64 = base64.b64encode(f.read()).decode('utf-8')
-ext = os.path.splitext(r'{image_path}')[1].lower().lstrip('.')
+ext = os.path.splitext(image_path)[1].lower().lstrip('.')
 if ext == 'jpg':
     ext = 'jpeg'
 client = OpenAI(api_key=api_key, base_url='https://dashscope.aliyuncs.com/compatible-mode/v1')
 t0 = time.time()
 resp = client.chat.completions.create(
     model=model_name,
-    messages=[{{'role': 'user', 'content': [{{'type': 'text', 'text': prompt}}, {{'type': 'image_url', 'image_url': {{'url': 'data:image/' + ext + ';base64,' + b64}}}}]}}],
+    messages=[{'role': 'user', 'content': [{'type': 'text', 'text': prompt}, {'type': 'image_url', 'image_url': {'url': 'data:image/' + ext + ';base64,' + b64}}]}],
     **extra
 )
 elapsed = time.time() - t0
-print('__ELAPSED__' + f'{{elapsed:.1f}}')
+print('__ELAPSED__' + f'{elapsed:.1f}')
 print(resp.choices[0].message.content)
-"#,
-        prompt_path = tmp_prompt.to_string_lossy().replace('\\', "\\\\"),
-        image_path = image_path.to_string_lossy().replace('\\', "\\\\"),
-    );
+"#;
 
     let mut child = runtime.python_process()
         .arg("-c")
         .arg(script)
+        .arg(&tmp_prompt)
+        .arg(&image_path)
         .env("DASHSCOPE_API_KEY", settings.get_api_key()?)
         .env("VERIFY_MODEL_NAME", &model_name)
         .env("VERIFY_EXTRA_PARAMS", &extra_params)

@@ -88,7 +88,7 @@
           <!-- 工作区选择 -->
           <div class="bg-white rounded-xl border p-4">
             <label class="block text-xs font-semibold text-gray-600 mb-2 uppercase tracking-wide">工作区</label>
-            <div class="flex gap-2">
+            <div class="flex gap-2 items-start">
               <input type="text" v-model="workDir" placeholder="上传后会显示服务端工作区路径，或直接粘贴已有路径"
                 class="flex-1 px-3 py-2 border rounded-lg text-sm bg-gray-50 text-gray-700"
                 @change="onWorkDirInput" />
@@ -96,10 +96,66 @@
                 class="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-50 transition flex-shrink-0">
                 上传文件夹...
               </button>
+              <div
+                class="relative flex-shrink-0"
+                @mouseenter="showStructureGuide = true"
+                @mouseleave="showStructureGuide = false"
+              >
+                <button
+                  type="button"
+                  class="w-10 h-10 rounded-lg border border-blue-200 bg-blue-50 text-blue-600 flex items-center justify-center hover:bg-blue-100 transition"
+                  aria-label="查看工作区结构要求"
+                  @click="showStructureGuide = !showStructureGuide"
+                >
+                  <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M12 22C6.477 22 2 17.523 2 12S6.477 2 12 2s10 4.477 10 10-4.477 10-10 10z" />
+                  </svg>
+                </button>
+
+                <Transition name="structure-guide">
+                  <div
+                    v-if="showStructureGuide"
+                    class="absolute right-0 top-12 z-30 w-80 rounded-2xl border border-slate-200 bg-white p-4 shadow-2xl"
+                  >
+                    <div class="flex items-start justify-between gap-3">
+                      <div>
+                        <p class="text-sm font-semibold text-slate-800">工作区结构示意</p>
+                        <p class="text-xs text-slate-500 mt-1">上传前先确认目录长这样</p>
+                      </div>
+                      <span class="px-2 py-1 rounded-full bg-blue-50 text-blue-600 text-[11px] font-medium">必看</span>
+                    </div>
+
+                    <div class="mt-3 rounded-xl border border-slate-200 bg-slate-50 p-3">
+                      <div class="text-[11px] text-slate-400 mb-2">示意结构</div>
+                      <div class="space-y-1.5 font-mono text-xs text-slate-700 leading-5">
+                        <div class="font-semibold text-slate-800">工作区/</div>
+                        <div class="pl-3">├─ <span class="font-semibold text-emerald-700">factors.xlsx</span></div>
+                        <div class="pl-3">├─ 材料A/</div>
+                        <div class="pl-8 text-slate-500">├─ sample-1.png</div>
+                        <div class="pl-8 text-slate-500">└─ sample-2.pdf</div>
+                        <div class="pl-3">└─ 材料B/</div>
+                        <div class="pl-8 text-slate-500">└─ sample-1.jpg</div>
+                      </div>
+                    </div>
+
+                    <div class="mt-3 space-y-2 text-xs text-slate-600 leading-5">
+                      <p>1. 根目录必须包含 <span class="font-semibold text-slate-800">factors.xlsx</span></p>
+                      <p>2. 每种材料放在自己的子文件夹里，文件夹名建议和材料名一致</p>
+                      <p>3. 子文件夹里放样本图片或 PDF，至少 1 份即可开始生成</p>
+                    </div>
+                  </div>
+                </Transition>
+              </div>
             </div>
             <p class="text-xs text-gray-400 mt-2">
               浏览器会把所选文件夹上传到服务端工作区，后续生成、验证和下载都基于这个工作区执行
             </p>
+            <div class="mt-2 inline-flex items-center gap-1.5 rounded-lg bg-blue-50 px-2.5 py-1 text-xs text-blue-600">
+              <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M12 22C6.477 22 2 17.523 2 12S6.477 2 12 2s10 4.477 10 10-4.477 10-10 10z" />
+              </svg>
+              鼠标移到右侧图标可查看结构示意，点击也能展开
+            </div>
           </div>
 
           <!-- 要素 + 材料 双列 -->
@@ -656,6 +712,7 @@ const maxReachableStep = computed(() => {
 })
 
 const workDir = ref('')
+const showStructureGuide = ref(false)
 const factors = ref([])
 const materials = ref([])
 const selectedMaterials = ref([])  // 多选材料列表
@@ -1060,6 +1117,7 @@ async function fjCopyJson(r) {
 async function clear() {
   currentStep.value = 1
   workDir.value = ''
+  showStructureGuide.value = false
   persistWorkDir()
   factors.value = []
   materials.value = []
@@ -1077,3 +1135,16 @@ async function clear() {
   await loadModels()
 }
 </script>
+
+<style scoped>
+.structure-guide-enter-active,
+.structure-guide-leave-active {
+  transition: opacity 0.18s ease, transform 0.18s ease;
+}
+
+.structure-guide-enter-from,
+.structure-guide-leave-to {
+  opacity: 0;
+  transform: translateY(-6px);
+}
+</style>
