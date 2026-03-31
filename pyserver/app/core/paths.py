@@ -9,9 +9,10 @@ class AppPaths:
     
     def __init__(self):
         # 基础目录
-        self.repo_root = Path(os.environ.get("AUTO_PROMPT_REPO_ROOT", "/app"))
+        default_repo_root = Path(__file__).resolve().parents[3]
+        self.repo_root = Path(os.environ.get("AUTO_PROMPT_REPO_ROOT", str(default_repo_root)))
         self.skills_dir = Path(os.environ.get("AUTO_PROMPT_SKILLS_DIR", self.repo_root / "skills"))
-        self.data_dir = Path(os.environ.get("AUTO_PROMPT_DATA_DIR", "/data"))
+        self.data_dir = Path(os.environ.get("AUTO_PROMPT_DATA_DIR", self.repo_root / ".runtime-data"))
         
         # 派生路径
         self.workspace_root = self.data_dir / "workspaces"

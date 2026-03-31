@@ -1,7 +1,7 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
-import { invoke } from '@tauri-apps/api/tauri'
-import { listen } from '@tauri-apps/api/event'
+import { invoke } from '../tauri/tauri.js'
+import { listen } from '../tauri/event.js'
 
 export const useSkillsStore = defineStore('skills', () => {
   // State

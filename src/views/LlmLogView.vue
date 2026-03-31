@@ -124,7 +124,7 @@
 
 <script setup>
 import { ref, computed, onMounted } from 'vue'
-import { invoke } from '@tauri-apps/api/tauri'
+import { apiClient } from '../services/apiClient.js'
 
 const entries = ref([])
 const total = ref(0)

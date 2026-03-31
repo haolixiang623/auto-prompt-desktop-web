@@ -5,30 +5,28 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "dev:server": "cargo run --manifest-path server/Cargo.toml",
+    "dev:server": "node ./scripts/run-python-server.mjs",
     "dev:web": "vite --host 0.0.0.0",
     "build": "vite build",
-    "build:server": "cargo build --manifest-path server/Cargo.toml --release",
-    "build:all": "npm run build && npm run build:server",
+    "build:all": "npm run build",
     "preview": "vite preview",
-    "start": "npm run build && cargo run --manifest-path server/Cargo.toml --release",
-    "test": "npm run test:frontend && npm run test:server",
-    "test:frontend": "node --test tests/task-service.test.mjs",
-    "test:server": "cargo test --manifest-path server/Cargo.toml",
-    "tauri": "tauri",
-    "tauri:dev": "tauri dev",
-    "tauri:build": "tauri build"
+    "start": "npm run build && node ./scripts/run-python-server.mjs prod",
+    "docker:build": "docker build -t auto-prompt-web .",
+    "docker:up": "docker compose -f docker-compose.python.yml up -d --build",
+    "docker:down": "docker compose -f docker-compose.python.yml down",
+    "docker:verify": "powershell -ExecutionPolicy Bypass -File ./scripts/docker-verify.ps1",
+    "test": "npm run test:frontend",
+    "test:frontend": "node --test tests/task-service.test.mjs"
   },
   "dependencies": {
-    "@tauri-apps/api": "^1.5.3",
     "pinia": "^2.1.7",
     "vue": "^3.4.15",
     "vue-router": "^4.2.5"
   },
   "devDependencies": {
-    "@tauri-apps/cli": "^1.6.3",
     "@vitejs/plugin-vue": "^5.0.3",
     "autoprefixer": "^10.4.17",
+    "playwright": "^1.58.2",
     "postcss": "^8.4.35",
     "tailwindcss": "^3.4.1",
     "vite": "^5.0.12"

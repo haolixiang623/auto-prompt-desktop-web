@@ -130,8 +130,8 @@
 <script setup>
   import { ref, onMounted, onUnmounted, nextTick } from 'vue'
   import { useRoute } from 'vue-router'
-  import { invoke } from '@tauri-apps/api/tauri'
-  import { listen } from '@tauri-apps/api/event'
+  import { apiClient } from '../services/apiClient.js'
+  // Tauri listen removed
   import { getScopedStorageItem, removeScopedStorageItem, setScopedStorageItem } from '../services/authState.js'
 
 const route = useRoute()

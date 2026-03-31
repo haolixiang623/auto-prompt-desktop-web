@@ -1,4 +1,4 @@
-import { invoke } from '@tauri-apps/api/tauri'
+import { apiClient } from '../services/apiClient.js'
 
 export function useSkills() {
   async function selectDirectory() {

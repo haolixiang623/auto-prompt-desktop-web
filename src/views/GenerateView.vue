@@ -92,7 +92,7 @@
               <input type="text" v-model="workDir" placeholder="上传后会显示服务端工作区路径，或直接粘贴已有路径"
                 class="flex-1 px-3 py-2 border rounded-lg text-sm bg-gray-50 text-gray-700"
                 @change="onWorkDirInput" />
-              <button @click="selectWorkDir" :disabled="isRunning"
+              <button @click="selectWorkDirFromService" :disabled="isRunning"
                 class="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-50 transition flex-shrink-0">
                 上传文件夹...
               </button>
@@ -689,9 +689,9 @@
 
 <script setup>
 import { ref, computed, watch, onMounted, onUnmounted, onActivated, nextTick } from 'vue'
-import { invoke } from '@tauri-apps/api/tauri'
-import { listen } from '@tauri-apps/api/event'
 import { getScopedStorageItem, removeScopedStorageItem, setScopedStorageItem } from '../services/authState.js'
+import { apiClient } from '../services/apiClient.js'
+import { invoke } from '../tauri/tauri.js'
 
 const steps = [
   { title: '上传工作区与材料', active: '配置中',  done: '已选择材料', pending: '待配置' },
@@ -751,6 +751,11 @@ const fjCopiedItem = ref(null)
 const fjGroupSize = ref(4)
 
 // 计算属性
+const canGenerate = computed(() => Boolean(
+  workDir.value &&
+  selectedMaterials.value.length > 0 &&
+  factors.value.length > 0
+))
 const batchDoneCount = computed(() => Object.keys(batchResults.value).length)
 const verifyDoneCount = computed(() => Object.values(verifyResults.value).filter(v => v?.success).length)
 const activeResult = computed(() => batchResults.value[activeBatchMaterial.value] || null)
@@ -758,6 +763,41 @@ const activeVerifyPrompt = computed(() => {
   const r = batchResults.value[activeVerifyMaterial.value]
   return r?.prompt_template || ''
 })
+
+function addLog(message, type = 'info') {
+  logs.value.push({
+    time: new Date().toLocaleTimeString(),
+    message: String(message),
+    type
+  })
+  nextTick(() => {
+    if (logContainer.value) {
+      logContainer.value.scrollTop = logContainer.value.scrollHeight
+    }
+  })
+}
+
+function getLogClass(type) {
+  switch (type) {
+    case 'error':
+      return 'text-red-400'
+    case 'success':
+      return 'text-green-400'
+    case 'warning':
+      return 'text-yellow-400'
+    default:
+      return 'text-blue-300'
+  }
+}
+
+function persistWorkDir() {
+  if (typeof window === 'undefined') return
+  if (workDir.value) {
+    setScopedStorageItem(WORKDIR_STORAGE_KEY, workDir.value)
+  } else {
+    removeScopedStorageItem(WORKDIR_STORAGE_KEY)
+  }
+}
 
 // 多选材料辅助
 function isMaterialSelected(m) {
@@ -793,18 +833,15 @@ watch(editablePrompt, (val) => {
   }
 })
 
-let unlistenSkillLog = null
-
 async function loadModels() {
   try {
-    const settings = await invoke('load_settings')
+    const settings = await apiClient.get('/api/settings')
     const mods = (settings.models && settings.models.length > 0) ? settings.models : [
       { id: '1', name: 'Qwen VL Max', model_id: 'qwen-vl-max', type: 'vl' },
       { id: '2', name: 'Qwen VL Plus', model_id: 'qwen-vl-plus', type: 'vl' },
       { id: '3', name: 'Qwen2.5 VL 72B', model_id: 'qwen2.5-vl-72b-instruct', type: 'vl' },
     ]
     availableModels.value = mods
-    // Use default_model_id from settings; fallback to first model
     const defaultId = settings.default_model_id || mods[0]?.id || ''
     if (!mods.find(m => m.id === selectedModelId.value)) {
       selectedModelId.value = defaultId
@@ -817,15 +854,17 @@ onActivated(() => { loadModels() })
 onMounted(async () => {
   await loadModels()
 
-  unlistenSkillLog = await listen('skill-log', (event) => {
-    const line = event.payload
-    const type = line.includes('[错误]') || line.includes('[验证错误]') ? 'error'
-      : line.includes('✓') || line.includes('[完成]') ? 'success'
-      : line.includes('[警告]') ? 'warning'
-      : 'info'
-    addLog(line, type)
-    nextTick(() => { if (logContainer.value) logContainer.value.scrollTop = logContainer.value.scrollHeight })
-  })
+  // 使用 HTTP API 获取日志
+  const logInterval = setInterval(async () => {
+    try {
+      const logs = await apiClient.get('/api/logs')
+      // 处理日志...
+    } catch (e) {
+      // 忽略错误
+    }
+  }, 1000)
+
+  onUnmounted(() => clearInterval(logInterval))
 
   if (!workDir.value && typeof window !== 'undefined') {
     const storedWorkDir = getScopedStorageItem(WORKDIR_STORAGE_KEY)
@@ -837,28 +876,6 @@ onMounted(async () => {
   }
 })
 
-onUnmounted(() => { if (unlistenSkillLog) unlistenSkillLog() })
-
-const canGenerate = computed(() => workDir.value && selectedMaterials.value.length > 0 && factors.value.length > 0)
-
-function getLogClass(type) {
-  return { error: 'text-red-400', success: 'text-green-400', warning: 'text-yellow-400', info: 'text-blue-300' }[type] || 'text-gray-400'
-}
-
-function addLog(message, type = 'info') {
-  logs.value.push({ time: new Date().toLocaleTimeString(), message, type })
-  nextTick(() => { if (logContainer.value) logContainer.value.scrollTop = logContainer.value.scrollHeight })
-}
-
-function persistWorkDir() {
-  if (typeof window === 'undefined') return
-  if (workDir.value) {
-    setScopedStorageItem(WORKDIR_STORAGE_KEY, workDir.value)
-  } else {
-    removeScopedStorageItem(WORKDIR_STORAGE_KEY)
-  }
-}
-
 async function onWorkDirInput() {
   const dir = workDir.value.trim()
   workDir.value = dir
@@ -867,6 +884,73 @@ async function onWorkDirInput() {
 }
 
 async function selectWorkDir() {
+  try {
+    // 使用文件选择器
+    const input = document.createElement('input')
+    input.type = 'file'
+    input.webkitdirectory = true
+    input.onchange = async (e) => {
+      const files = e.target.files
+      if (files.length === 0) return
+      // 上传文件到服务器
+      const formData = new FormData()
+      for (const file of files) {
+        formData.append('files', file)
+      }
+      const result = await apiClient.upload('/api/workspaces/upload', formData)
+      if (result.data && result.data.path) {
+        workDir.value = result.data.path
+        persistWorkDir()
+        addLog(`已上传工作区: ${result.data.path}`, 'info')
+        await loadDirectoryData()
+      }
+    }
+    input.click()
+  } catch (error) {
+    addLog(`上传工作区失败: ${error}`, 'error')
+  }
+}
+
+async function selectWorkDirV2() {
+  try {
+    const input = document.createElement('input')
+    input.type = 'file'
+    input.webkitdirectory = true
+    input.onchange = async (e) => {
+      const files = Array.from(e.target.files || [])
+      if (files.length === 0) return
+
+      const entries = files.map((file) => ({
+        file,
+        relativePath: file.webkitRelativePath || file.name
+      }))
+
+      const formData = new FormData()
+      formData.append('name', entries[0]?.relativePath?.split('/')[0] || 'workspace')
+      formData.append(
+        'manifest',
+        JSON.stringify(entries.map((entry) => ({ relativePath: entry.relativePath })))
+      )
+      entries.forEach((entry) => {
+        formData.append('files', entry.file, entry.file.name)
+      })
+
+      const result = await apiClient.upload('/api/workspaces', formData)
+      const nextPath = result?.rootPath || result?.data?.path || ''
+      if (nextPath) {
+        workDir.value = nextPath
+        persistWorkDir()
+        addLog(`宸蹭笂浼犲伐浣滃尯: ${nextPath}`, 'info')
+        await loadDirectoryData()
+      }
+    }
+    input.click()
+  } catch (error) {
+    addLog(`涓婁紶宸ヤ綔鍖哄け璐? ${error}`, 'error')
+  }
+}
+
+async function selectWorkDirFromService() {
   try {
     const selected = await invoke('select_directory')
     if (!selected) return
@@ -887,18 +971,17 @@ async function loadDirectoryData() {
   verifyResults.value = {}
   editablePrompt.value = ''
   try {
-    const factorsData = await invoke('read_factors', { workDir: workDir.value })
-    factors.value = factorsData
-    addLog(`读取到 ${factorsData.length} 个要素字段`, 'success')
+    const factorsData = await apiClient.get('/api/workspaces/factors', { workDir: workDir.value })
+    factors.value = factorsData.data || []
+    addLog(`读取到 ${factors.value.length} 个要素字段`, 'success')
   } catch (error) {
     addLog(`读取要素失败: ${error}`, 'error')
   }
   try {
-    const materialsData = await invoke('get_materials', { workDir: workDir.value })
-    materials.value = materialsData
-    addLog(`发现 ${materialsData.length} 个材料类型`, 'success')
-    // 默认全选
-    selectedMaterials.value = [...materialsData]
+    const materialsData = await apiClient.get('/api/workspaces/materials', { workDir: workDir.value })
+    materials.value = materialsData.data || []
+    addLog(`发现 ${materials.value.length} 个材料类型`, 'success')
+    selectedMaterials.value = [...materials.value]
   } catch (error) {
     addLog(`扫描材料目录失败: ${error}`, 'error')
   }
@@ -929,15 +1012,15 @@ async function goStep2() {
     const matStart = Date.now()
     addLog(`[${mat.name}] 开始生成...`, 'info')
     try {
-      const generateResult = await invoke('generate_prompt', {
+      const generateResult = await apiClient.post('/api/generate/prompt', {
         workDir: workDir.value,
         materialName: mat.name,
         modelCfgId: selectedModelId.value || null
       })
       const elapsed = ((Date.now() - matStart) / 1000).toFixed(1)
-      batchResults.value[mat.name] = { ...generateResult, success: true, elapsed }
+      batchResults.value[mat.name] = { ...generateResult.data, success: true, elapsed }
       addLog(`[${mat.name}] 生成成功！耗时 ${elapsed}s`, 'success')
-      if (generateResult.output_file) addLog(`已保存: ${generateResult.output_file}`, 'success')
+      if (generateResult.data.output_file) addLog(`已保存: ${generateResult.data.output_file}`, 'success')
     } catch (error) {
       const elapsed = ((Date.now() - matStart) / 1000).toFixed(1)
       const errStr = String(error)
@@ -980,12 +1063,12 @@ async function runVerify() {
   try {
     const materialDir = `${workDir.value}/${matName}`
     const promptText = activeVerifyPrompt.value
-    const vr = await invoke('verify_extraction', { materialDir, promptText, modelCfgId: selectedModelId.value || null })
-    verifyResults.value = { ...verifyResults.value, [matName]: vr }
-    if (vr.success) {
+    const vr = await apiClient.post('/api/generate/verify', { materialDir, promptText, modelCfgId: selectedModelId.value || null })
+    verifyResults.value = { ...verifyResults.value, [matName]: vr.data }
+    if (vr.data.success) {
       addLog(`[验证] 「${matName}」提取完成，请人工检查结果`, 'success')
     } else {
-      addLog(`[验证失败] 「${matName}」: ${vr.error}`, 'error')
+      addLog(`[验证失败] 「${matName}」: ${vr.data.error}`, 'error')
     }
   } catch (e) {
     addLog(`[验证异常] ${e}`, 'error')
@@ -1002,7 +1085,7 @@ async function savePrompt() {
   if (!r?.output_file || isSaving.value) return
   isSaving.value = true
   try {
-    await invoke('save_prompt_file', { filePath: r.output_file, content: editablePrompt.value })
+    await apiClient.post('/api/generate/save-prompt', { filePath: r.output_file, content: editablePrompt.value })
     if (batchResults.value[matName]) batchResults.value[matName].prompt_template = editablePrompt.value
     promptModified.value = false
     addLog(`「${matName}」提示词修改已保存`, 'success')
@@ -1072,10 +1155,10 @@ async function generateFactorJson() {
   fjResults.value = []
   addLog(`开始生成要素JSON（每组最多 ${fjGroupSize.value} 个要素）...`, 'info')
   try {
-    const res = await invoke('generate_factor_json', { workDir: workDir.value, groupSize: fjGroupSize.value })
-    fjResults.value = res
-    const ok = res.filter(r => r.success).length
-    addLog(`生成完成！共 ${res.length} 个材料，成功 ${ok} 个`, 'success')
+    const res = await apiClient.post('/api/generate/factor-json', { workDir: workDir.value, groupSize: fjGroupSize.value })
+    fjResults.value = res.data
+    const ok = res.data.filter(r => r.success).length
+    addLog(`生成完成！共 ${res.data.length} 个材料，成功 ${ok} 个`, 'success')
   } catch (e) {
     addLog(`生成失败: ${e}`, 'error')
   } finally {
@@ -1089,15 +1172,17 @@ async function fjTogglePreview(r) {
   if (!r.previewContent && !r.loadingPreview) {
     r.loadingPreview = true
     try {
-      const content = await invoke('read_json_file', { path: r.output })
-      r.previewContent = JSON.stringify(JSON.parse(content), null, 2)
+      const result = await apiClient.get('/api/files/read', { path: r.output })
+      r.previewContent = JSON.stringify(JSON.parse(result.data.content), null, 2)
     } catch (e) { r.previewError = String(e) }
     finally { r.loadingPreview = false }
   }
 }
 
 async function fjOpenInFinder(path) {
-  try { await invoke('open_in_finder', { path }) }
+  try { 
+    await apiClient.post('/api/files/open-location', { path })
+  }
   catch (e) { addLog(`打开位置失败: ${e}`, 'error') }
 }
 
@@ -1105,8 +1190,8 @@ async function fjCopyJson(r) {
   try {
     let content = r.previewContent
     if (!content) {
-      const raw = await invoke('read_json_file', { path: r.output })
-      content = JSON.stringify(JSON.parse(raw), null, 2)
+      const result = await apiClient.get('/api/files/read', { path: r.output })
+      content = JSON.stringify(JSON.parse(result.data.content), null, 2)
     }
     await navigator.clipboard.writeText(content)
     fjCopiedItem.value = r.material

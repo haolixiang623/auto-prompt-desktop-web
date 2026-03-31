@@ -25,7 +25,9 @@ export async function ensureAuthLoaded() {
 
   authState.loading = true
   authLoadPromise = apiClient.get('/api/auth/me')
-    .then((user) => {
+    .then((response) => {
+      // 处理嵌套的响应结构
+      const user = response.data || response
       setCurrentUser(user)
       return authState
     })
@@ -43,7 +45,9 @@ export async function ensureAuthLoaded() {
 }
 
 export async function login(username, password) {
-  const session = await apiClient.post('/api/auth/login', { username, password })
+  const response = await apiClient.post('/api/auth/login', { username, password })
+  // 处理嵌套的响应结构
+  const session = response.data || response
   setAuthSession(session)
   return session
 }

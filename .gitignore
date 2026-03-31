@@ -23,10 +23,7 @@ dist-ssr
 *.sln
 *.sw?
 
-# Tauri
-src-tauri/target
-src-tauri/Cargo.lock
-src-tauri/resources/python-runtime/
+# Legacy generated artifacts
 server/target
 .runtime-data/
 
@@ -55,3 +52,10 @@ skills/**/classification_report.json
 # Local browser and E2E artifacts
 .playwright-cli/
 output/
+.codex-appdata*/
+.codex-browser-profile*/
+.codex-docker*/
+.codex-docker-home*/
+.codex-localappdata*/
+.codex-logs/
+.codex-runtime/

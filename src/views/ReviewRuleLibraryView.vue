@@ -305,7 +305,7 @@
 
 <script setup>
 import { ref, computed, onMounted } from 'vue'
-import { invoke } from '@tauri-apps/api/tauri'
+import { apiClient } from '../services/apiClient.js'
 
 // ─── 数据状态 ──────────────────────────────────────
 const loading = ref(false)

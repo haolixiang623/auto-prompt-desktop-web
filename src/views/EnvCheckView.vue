@@ -242,7 +242,7 @@
 
 <script setup>
 import { ref, computed, onMounted } from 'vue'
-import { invoke } from '@tauri-apps/api/tauri'
+import { apiClient } from '../services/apiClient.js'
 import { authState } from '../services/authState.js'
 
 // ── 状态徽章子组件 ──────────────────────────────────────────

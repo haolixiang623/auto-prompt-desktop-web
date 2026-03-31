@@ -74,9 +74,9 @@ class AuthStore:
         try:
             self.create_user(
                 CreateUserRequest(
-                    name="Administrator",
+                    name="System Admin",
                     username="admin",
-                    password="admin123"  # 生产环境应该修改默认密码
+                    password="admin123456"  # 生产环境应该修改默认密码
                 ),
                 role=UserRole.ADMIN
             )

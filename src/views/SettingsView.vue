@@ -273,7 +273,7 @@
 
 <script setup>
 import { ref, onMounted } from 'vue'
-import { invoke } from '@tauri-apps/api/tauri'
+import { invoke } from '../tauri/tauri.js'
 
 const apiKey = ref('')
 const modelName = ref('qwen-vl-max')

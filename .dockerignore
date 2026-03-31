@@ -5,4 +5,8 @@ dist
 server/target
 src-tauri/target
 .runtime-data
+.codex-*
+.codex-docker-home
+.codex-localappdata
+.codex-appdata
 .DS_Store

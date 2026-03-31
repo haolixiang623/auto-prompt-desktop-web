@@ -241,8 +241,8 @@
 
 <script setup>
 import { ref, computed, onMounted, onUnmounted } from 'vue'
-import { invoke } from '@tauri-apps/api/tauri'
-import { listen } from '@tauri-apps/api/event'
+import { apiClient } from '../services/apiClient.js'
+// Tauri listen removed
 
 const loading = ref(false)
 const allCases = ref([])

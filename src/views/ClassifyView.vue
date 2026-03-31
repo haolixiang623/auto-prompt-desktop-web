@@ -614,8 +614,8 @@
 
 <script setup>
 import { ref, computed, onMounted, onUnmounted, onActivated, nextTick } from 'vue'
-import { invoke } from '@tauri-apps/api/tauri'
-import { listen } from '@tauri-apps/api/event'
+import { apiClient } from '../services/apiClient.js'
+// Tauri listen removed
 import { getScopedStorageItem, removeScopedStorageItem, setScopedStorageItem } from '../services/authState.js'
 
 const steps = [
