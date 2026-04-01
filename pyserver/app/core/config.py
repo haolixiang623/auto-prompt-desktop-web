@@ -24,16 +24,43 @@ class AppSettings:
     temperature: float = 0.7
     max_tokens: int = 4000
     default_prompts: DefaultGodPrompts = field(default_factory=DefaultGodPrompts)
-    
+    database: DatabaseConfig = field(default_factory=DatabaseConfig)
+
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
-    
+
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "AppSettings":
         prompts = data.pop("default_prompts", {})
+        db_cfg = data.pop("database", {})
         return cls(
             **data,
-            default_prompts=DefaultGodPrompts(**prompts)
+            default_prompts=DefaultGodPrompts(**prompts),
+            database=DatabaseConfig.from_dict(db_cfg)
+        )
+
+
+class DatabaseConfig:
+    """数据库配置"""
+    type: str = "sqlite"  # sqlite | postgresql
+    sqlite_path: str = ""
+    pg_host: str = "localhost"
+    pg_port: int = 5432
+    pg_user: str = "postgres"
+    pg_password: str = ""
+    pg_database: str = "auto_prompt"
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "DatabaseConfig":
+        return cls(**data)
+
+    def build_pg_url(self) -> str:
+        return (
+            f"postgresql://{self.pg_user}:{self.pg_password}"
+            f"@{self.pg_host}:{self.pg_port}/{self.pg_database}"
         )
 
 

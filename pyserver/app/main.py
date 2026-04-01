@@ -1,29 +1,36 @@
 from __future__ import annotations
 
+import base64
 import json
 import mimetypes
 import os
+import re
 import secrets
 import sqlite3
 import subprocess
 import sys
 import threading
+import time
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime
+from io import BytesIO
 from pathlib import Path
 from typing import Any, Optional
+from urllib.parse import quote
 from uuid import uuid4
+from zipfile import ZIP_DEFLATED, ZipFile
 
 from argon2 import PasswordHasher
 from argon2.exceptions import VerifyMismatchError
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from .core.paths import get_paths
+from .core.data import DataStore
 
 
 DEFAULT_MODELS = [
@@ -78,6 +85,56 @@ def workspace_to_json(summary: Any) -> dict[str, Any]:
 
 
 PASSWORD_HASHER = PasswordHasher()
+
+
+# ─────────────────── LLM 调用日志存储（内存，最多2000条） ───────────────────
+
+class LlmLogStore:
+    MAX_ENTRIES = 2000
+
+    def __init__(self) -> None:
+        self._entries: list[dict[str, Any]] = []
+        self._counter = 0
+        self._lock = threading.Lock()
+
+    def add(self, *, scene: str, model: str, prompt_summary: str,
+            response_summary: str = "", error: str = "",
+            success: bool = True, elapsed_s: Optional[float] = None) -> None:
+        with self._lock:
+            self._counter += 1
+            entry = {
+                "id": self._counter,
+                "scene": scene,
+                "model": model,
+                "prompt_summary": prompt_summary[:2000],
+                "response_summary": response_summary[:2000],
+                "error": error[:2000] if error else "",
+                "success": success,
+                "elapsed_s": round(elapsed_s, 1) if elapsed_s is not None else None,
+                "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            }
+            self._entries.append(entry)
+            if len(self._entries) > self.MAX_ENTRIES:
+                self._entries = self._entries[-self.MAX_ENTRIES:]
+
+    def list(self, page: int = 1, page_size: int = 20) -> dict[str, Any]:
+        with self._lock:
+            total = len(self._entries)
+            # 最新的在前
+            sorted_entries = list(reversed(self._entries))
+            start = (page - 1) * page_size
+            end = start + page_size
+            return {
+                "entries": sorted_entries[start:end],
+                "total": total,
+                "page": page,
+                "pageSize": page_size,
+            }
+
+    def clear(self) -> None:
+        with self._lock:
+            self._entries.clear()
+            self._counter = 0
 
 
 class UploadedBlob(BaseModel):
@@ -273,7 +330,7 @@ class TaskStore:
         self._tasks: dict[str, dict[str, Any]] = {}
         self._logs: dict[str, list[str]] = {}
 
-    def create(self, kind: str, owner_user_id: str):
+    def create(self, kind: str, owner_user_id: str, data_store: Any = None):
         task_id = str(uuid4())
         task = type("Task", (), {
             "id": task_id,
@@ -401,11 +458,113 @@ class SavePromptRequest(BaseModel):
     content: str
 
 
-def find_media_file(material_dir: Path) -> Optional[Path]:
-    for path in material_dir.iterdir():
-        if path.is_file() and path.suffix.lower() in {".jpg", ".jpeg", ".png", ".bmp", ".gif", ".webp"}:
-            return path
+def _convert_pdf_first_page(pdf_path: Path, output_dir: Path) -> Optional[Path]:
+    """Convert the first page of a PDF to a PNG image."""
+    output_dir.mkdir(parents=True, exist_ok=True)
+    base_name = pdf_path.stem
+    out_path = output_dir / f"{base_name}_p1.png"
+    if out_path.exists():
+        return out_path
+    try:
+        import fitz  # PyMuPDF
+        doc = fitz.open(str(pdf_path))
+        if doc.page_count == 0:
+            doc.close()
+            return None
+        page = doc[0]
+        pix = page.get_pixmap(dpi=200)
+        pix.save(str(out_path))
+        doc.close()
+        return out_path
+    except ImportError:
+        pass
+    try:
+        from pdf2image import convert_from_path
+        imgs = convert_from_path(str(pdf_path), dpi=200, first_page=1, last_page=1)
+        if imgs:
+            imgs[0].save(str(out_path), "PNG")
+            return out_path
+    except ImportError:
+        pass
     return None
+
+
+def find_media_file(material_dir: Path) -> Optional[Path]:
+    """Find the first image file in the material directory (recursive search).
+    If only PDF files exist, auto-convert the first page to an image."""
+    image_exts = {".jpg", ".jpeg", ".png", ".bmp", ".gif", ".webp"}
+    first_pdf: Optional[Path] = None
+    for path in sorted(material_dir.rglob("*")):
+        if path.is_file():
+            if path.suffix.lower() in image_exts:
+                return path
+            if first_pdf is None and path.suffix.lower() == ".pdf":
+                first_pdf = path
+    if first_pdf is not None:
+        converted = _convert_pdf_first_page(first_pdf, material_dir / "__pdf_converted__")
+        if converted:
+            return converted
+    return None
+
+
+def resolve_model_id(settings: dict[str, Any], model_cfg_id: Optional[str]) -> str:
+    """Resolve a modelCfgId (string id from frontend) to the actual model_id string."""
+    if model_cfg_id:
+        for m in settings.get("models", []):
+            if m.get("id") == model_cfg_id:
+                return m.get("model_id", settings["model_name"])
+    return settings["model_name"]
+
+
+def base64_image(path: Path) -> str:
+    with open(path, "rb") as f:
+        return base64.b64encode(f.read()).decode("utf-8")
+
+
+def run_verify_extraction(material_dir: Path, prompt_text: str, model_id: str, api_key: str,
+                          llm_logs: Optional[LlmLogStore] = None) -> dict[str, Any]:
+    """Call Qwen VL to extract data from the first image using the given prompt."""
+    image_path = find_media_file(material_dir)
+    if image_path is None:
+        return {"success": False, "error": "no image found in material directory"}
+
+    from openai import OpenAI
+    client = OpenAI(api_key=api_key, base_url="https://dashscope.aliyuncs.com/compatible-mode/v1")
+    start = time.time()
+    try:
+        response = client.chat.completions.create(
+            model=model_id,
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": prompt_text},
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": f"data:image/jpeg;base64,{base64_image(image_path)}"},
+                        },
+                    ],
+                }
+            ],
+        )
+        elapsed_s = time.time() - start
+        output = response.choices[0].message.content
+        if llm_logs:
+            llm_logs.add(scene="验证提取", model=model_id, prompt_summary=prompt_text,
+                         response_summary=output or "", success=True, elapsed_s=elapsed_s)
+        return {
+            "success": True,
+            "image_file": image_path.name,
+            "extraction_output": output,
+            "error": None,
+            "elapsed": f"{elapsed_s:.1f}",
+        }
+    except Exception as exc:
+        elapsed_s = time.time() - start
+        if llm_logs:
+            llm_logs.add(scene="验证提取", model=model_id, prompt_summary=prompt_text,
+                         error=str(exc), success=False, elapsed_s=elapsed_s)
+        return {"success": False, "image_file": image_path.name, "extraction_output": "", "error": str(exc), "elapsed": "0.0"}
 
 
 def read_factors_script(paths: Any, work_dir: str) -> list[dict[str, Any]]:
@@ -430,10 +589,13 @@ def read_factors_script(paths: Any, work_dir: str) -> list[dict[str, Any]]:
     return json.loads(output.stdout or "[]")
 
 
-def run_factor_json(paths: Any, work_dir: str) -> list[dict[str, Any]]:
+def run_factor_json(paths: Any, work_dir: str, group_size: int = 4, materials: Optional[list[str]] = None) -> list[dict[str, Any]]:
     script = paths.skills_dir / "factor-json-generator" / "generate_factor_json.py"
+    cmd = [sys.executable, str(script), work_dir, "--group-size", str(group_size)]
+    if materials:
+        cmd.extend(["--materials"] + materials)
     output = subprocess.run(
-        [sys.executable, str(script), work_dir, "--group-size", "4"],
+        cmd,
         capture_output=True,
         text=True,
         encoding="utf-8",
@@ -449,6 +611,7 @@ def run_factor_json(paths: Any, work_dir: str) -> list[dict[str, Any]]:
 
 def run_generate_prompt(paths: Any, settings: dict[str, Any], work_dir: str, material_name: Optional[str]) -> dict[str, Any]:
     material_dir = Path(work_dir) / material_name if material_name else Path(work_dir)
+    user_id = _resolve_user_id_from_work_dir(paths, work_dir)
     script = paths.skills_dir / "doc-extract-prompt-gen" / "generate_prompt.py"
     env = {
         **os.environ,
@@ -456,7 +619,9 @@ def run_generate_prompt(paths: Any, settings: dict[str, Any], work_dir: str, mat
         "OPENAI_API_KEY": settings["api_key"],
         "OPENAI_BASE_URL": "https://dashscope.aliyuncs.com/compatible-mode/v1",
         "MODEL_NAME": settings["model_name"],
+        "LLM_TIMEOUT": str(settings.get("llm_timeout", 120)),
         "EXTRACT_GOD_PROMPT": settings["extract_god_prompt"],
+        "AUTO_PROMPT_SKILLS_DIR": str(paths.skills_dir),
     }
     args = [sys.executable, str(script), str(material_dir)]
     if material_name:
@@ -464,13 +629,39 @@ def run_generate_prompt(paths: Any, settings: dict[str, Any], work_dir: str, mat
     output = subprocess.run(args, capture_output=True, text=True, encoding="utf-8", errors="ignore", env=env)
     if output.returncode != 0:
         raise ValueError(output.stderr.strip() or output.stdout.strip() or "generate prompt failed")
-    output_file = material_dir / f"{material_dir.name}--要素提取完整提示词.txt"
+    # 读取生成的提示词内容
+    raw_output = material_dir / f"{material_dir.name}--要素提取完整提示词.txt"
+    prompt_template = ""
+    if raw_output.exists():
+        prompt_template = raw_output.read_text(encoding="utf-8")
+    if not prompt_template.strip():
+        raise ValueError(f"generated prompt is empty: {raw_output}")
+    # 保存到用户隔离输出目录
+    prompts_dir = paths.user_output_root / user_id / "prompts"
+    prompts_dir.mkdir(parents=True, exist_ok=True)
+    safe_name = re.sub(r"[^\w\u4e00-\u9fff-]", "_", material_dir.name)
+    output_file = prompts_dir / f"{safe_name}--要素提取完整提示词.txt"
+    output_file.write_text(prompt_template, encoding="utf-8")
     return {
         "output_file": str(output_file),
         "factors_count": len(read_factors_script(paths, str(material_dir))),
         "images_count": sum(1 for entry in material_dir.iterdir() if entry.is_file() and entry.suffix.lower() in {".jpg", ".jpeg", ".png", ".bmp", ".gif", ".webp", ".pdf"}),
-        "prompt_template": output_file.read_text(encoding="utf-8") if output_file.exists() else "",
+        "prompt_template": prompt_template,
     }
+
+
+def _resolve_user_id_from_work_dir(paths: Any, work_dir: str) -> str:
+    """
+    从已解析的绝对路径 work_dir 中提取 user_id。
+    work_dir 格式: /.../workspaces/{user_id}/my-project
+    """
+    ws_root = str(paths.user_workspace_root)  # /.../workspaces
+    if work_dir.startswith(ws_root):
+        rel = work_dir[len(ws_root):].lstrip("/")
+        first = rel.split("/")[0] if rel else ""
+        if first:
+            return first
+    return "default"
 
 
 def run_lines(command: list[str], env: dict[str, str], cwd: Optional[str], log_cb: Optional[Any] = None) -> list[str]:
@@ -528,11 +719,37 @@ def run_test_classify(paths: Any, settings: dict[str, Any], work_dir: str, promp
     raise ValueError("test result not found")
 
 
-def run_review_rule(paths: Any, settings: dict[str, Any], work_dir: str, use_llm: bool, log_cb: Optional[Any] = None) -> list[dict[str, Any]]:
+def run_review_rule(
+    paths: Any,
+    settings: dict[str, Any],
+    work_dir: str,
+    use_llm: bool,
+    log_cb: Optional[Any] = None,
+    api_key: Optional[str] = None,
+    base_url: Optional[str] = None,
+    model: Optional[str] = None,
+    materials: Optional[list[str]] = None,
+) -> list[dict[str, Any]]:
     script = paths.skills_dir / "review-rule-generator" / "generate_review_rule.py"
     cmd = [sys.executable, str(script), work_dir]
     if use_llm:
-        cmd.extend(["--api-key", settings["api_key"], "--base-url", "https://dashscope.aliyuncs.com/compatible-mode/v1", "--model", settings["model_name"]])
+        resolved_api_key = api_key if api_key is not None else settings["api_key"]
+        resolved_base_url = base_url or "https://dashscope.aliyuncs.com/compatible-mode/v1"
+        resolved_model = model or settings["model_name"]
+        resolved_timeout = str(settings.get("llm_timeout", 120))
+        cmd.extend([
+            "--use-llm",
+            "--api-key",
+            resolved_api_key,
+            "--base-url",
+            resolved_base_url,
+            "--model",
+            resolved_model,
+            "--timeout",
+            resolved_timeout,
+        ])
+    if materials:
+        cmd.extend(["--materials"] + materials)
     lines = run_lines(cmd, os.environ.copy(), None, log_cb)
     for line in lines:
         if line.startswith("RESULTS_JSON:"):
@@ -540,30 +757,132 @@ def run_review_rule(paths: Any, settings: dict[str, Any], work_dir: str, use_llm
     return []
 
 
-def load_case_library(paths: Any) -> dict[str, Any]:
-    return load_json(Path(paths.data_dir) / "case_library.json", {"version": "1.0", "cases": []})
+def _resolve_user_work_dir(paths: Any, work_dir: str, user_id: str) -> str:
+    """
+    将前端传入的 workDir 转换为真实文件系统路径。
+
+    前端传入的 workDir 可能是：
+    - 完整路径：.runtime-data/workspaces/{workspace_id}/xxx
+    - 相对路径：workspaces/{user_id}/xxx
+    - 用户相对路径：xxx（不带前缀）
+
+    统一映射到：workspaces/{user_id}/xxx
+    """
+    if not work_dir:
+        return str(paths.user_workspace_root / user_id)
+
+    workspace_root = paths.user_workspace_root.resolve()
+
+    def resolve_workspace_path(candidate: Path) -> str:
+        resolved = candidate.expanduser().resolve(strict=False)
+        try:
+            relative = resolved.relative_to(workspace_root)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="invalid workspace path") from exc
+
+        if relative.parts and relative.parts[0] != user_id:
+            raise HTTPException(status_code=403, detail="workspace access denied")
+
+        return str(resolved)
+
+    # 兼容前端恢复的绝对路径工作区
+    if Path(work_dir).is_absolute():
+        return resolve_workspace_path(Path(work_dir))
+
+    # 如果是 .runtime-data/workspaces 格式，直接返回完整路径
+    if work_dir.startswith(".runtime-data/workspaces/"):
+        return resolve_workspace_path(paths.repo_root / work_dir)
+
+    # 去掉 "workspaces" 前缀
+    rel = work_dir
+    if rel.startswith("workspaces/"):
+        rel = rel[len("workspaces/"):]
+    elif rel == "workspaces":
+        rel = ""
+
+    # 如果去掉前缀后第一个部分不是 user_id，说明是旧格式或相对路径，加前缀
+    first = rel.split("/")[0] if rel else ""
+    if first != user_id:
+        rel = f"{user_id}/{rel}" if rel else user_id
+
+    # 去掉可能的重复 user_id（处理 "userA/userA/xxx" 的边界情况）
+    if rel.startswith(f"{user_id}/{user_id}/"):
+        rel = rel[len(f"{user_id}/"):]
+
+    return str(paths.user_workspace_root / rel)
 
 
-def save_case_library(paths: Any, value: dict[str, Any]) -> None:
-    write_json(Path(paths.data_dir) / "case_library.json", value)
+def _resolve_user_file_path(paths: Any, file_path: str, user_id: str) -> Path:
+    if not file_path:
+        raise HTTPException(status_code=400, detail="missing file path")
+
+    target = Path(file_path)
+    if not target.is_absolute():
+        target = paths.repo_root / target
+
+    resolved = target.expanduser().resolve(strict=False)
+    allowed_roots = [
+        (paths.user_workspace_root / user_id).resolve(),
+        (paths.user_output_root / user_id).resolve(),
+    ]
+
+    for allowed_root in allowed_roots:
+        try:
+            resolved.relative_to(allowed_root)
+            return resolved
+        except ValueError:
+            continue
+
+    raise HTTPException(status_code=403, detail="file access denied")
 
 
-def load_review_rule_library_file(paths: Any) -> list[Any]:
-    return load_json(Path(paths.data_dir) / "review_rule_library.json", [])
+def build_zip_archive(file_paths: list[Path]) -> bytes:
+    buffer = BytesIO()
+    with ZipFile(buffer, "w", compression=ZIP_DEFLATED) as zip_file:
+        for file_path in file_paths:
+            zip_file.writestr(file_path.name, file_path.read_bytes())
+    return buffer.getvalue()
 
 
-def save_review_rule_library_file(paths: Any, value: list[Any]) -> None:
-    write_json(Path(paths.data_dir) / "review_rule_library.json", value)
+def _ensure_user_dirs(paths: Any, user_id: str) -> None:
+    """确保用户隔离目录存在"""
+    (paths.user_workspace_root / user_id).mkdir(parents=True, exist_ok=True)
+    (paths.user_output_root / user_id / "prompts").mkdir(parents=True, exist_ok=True)
+    (paths.user_output_root / user_id / "review_rules").mkdir(parents=True, exist_ok=True)
+
+
+def load_case_library(paths: Any, data_store: Any) -> dict[str, Any]:
+    """所有案例（全员可见）"""
+    return {"version": "1.0", "cases": data_store.list_cases()}
+
+
+def save_case_library(paths: Any, data_store: Any, value: dict[str, Any]) -> None:
+    """保存案例（写入 admin 名下）"""
+    cases = value.get("cases", [])
+    data_store.import_cases(cases, overwrite=True)
+
+
+def load_review_rule_library_file(paths: Any, data_store: Any) -> list[Any]:
+    """所有审查规则（全员可见）"""
+    return data_store.list_review_rules()
+
+
+def save_review_rule_library_file(paths: Any, data_store: Any, value: list[Any]) -> None:
+    """保存审查规则（写入 admin 名下）"""
+    data_store.save_review_rules(value)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     paths = get_paths()
+    data_store = DataStore(paths.app_db_path)
     app.state.paths = paths
-    app.state.auth = AuthStore(paths.auth_db_path)
+    app.state.auth = AuthStore(paths.app_db_path)
     app.state.tasks = TaskStore(paths.task_root)
     app.state.workspaces = WorkspaceService(paths)
     app.state.ui_settings = UiSettingsStore(paths.settings_path, paths.repo_root / "auto-prompt.project.json")
+    app.state.data = data_store
+    app.state.llm_logs = LlmLogStore()
     yield
 
 
@@ -654,6 +973,21 @@ async def default_prompts(request: Request, user: Any = Depends(current_user)):
     return request.app.state.ui_settings.default_god_prompts()
 
 
+@app.get("/api/god-prompts")
+async def list_god_prompts(request: Request, user: Any = Depends(current_user)):
+    """所有 god prompts（全员可见）"""
+    return request.app.state.data.list_god_prompts()
+
+
+@app.put("/api/god-prompts")
+async def save_god_prompts(payload: dict[str, Any], request: Request, admin: Any = Depends(current_admin)):
+    """批量保存 god prompts（仅 admin 可写）"""
+    prompts = payload.get("prompts", {})
+    for name, content in prompts.items():
+        request.app.state.data.save_god_prompt(str(name), str(content))
+    return {"ok": True}
+
+
 @app.post("/api/settings/test-key")
 async def test_key(payload: dict[str, Any], request: Request, admin: Any = Depends(current_admin)):
     try:
@@ -701,8 +1035,10 @@ async def workspace_upload_legacy(request: Request, files: list[UploadFile] = Fi
 
 
 @app.get("/api/workspaces/materials")
-async def workspace_materials(workDir: str = Query(...), user: Any = Depends(current_user)):
-    root = Path(workDir)
+async def workspace_materials(workDir: str = Query(...), request: Request = None, user: Any = Depends(current_user)):
+    paths = request.app.state.paths
+    real_dir = _resolve_user_work_dir(paths, workDir, user.id)
+    root = Path(real_dir)
     result = []
     for entry in root.iterdir():
         if entry.is_dir():
@@ -714,7 +1050,9 @@ async def workspace_materials(workDir: str = Query(...), user: Any = Depends(cur
 
 @app.get("/api/workspaces/factors")
 async def workspace_factors(request: Request, workDir: str = Query(...), user: Any = Depends(current_user)):
-    return {"data": read_factors_script(request.app.state.paths, workDir)}
+    paths = request.app.state.paths
+    real_dir = _resolve_user_work_dir(paths, workDir, user.id)
+    return {"data": read_factors_script(paths, real_dir)}
 
 
 @app.get("/api/workspaces/{workspace_id}")
@@ -725,16 +1063,40 @@ async def get_workspace(workspace_id: str, request: Request, user: Any = Depends
 @app.post("/api/generate/prompt")
 async def generate_prompt(payload: dict[str, Any], request: Request, user: Any = Depends(current_user)):
     settings = request.app.state.ui_settings.load_front()
-    return {"data": run_generate_prompt(request.app.state.paths, settings, payload["workDir"], payload.get("materialName"))}
+    paths = request.app.state.paths
+    _ensure_user_dirs(paths, user.id)
+    real_work_dir = _resolve_user_work_dir(paths, payload["workDir"], user.id)
+    llm_logs = request.app.state.llm_logs
+    start = time.time()
+    try:
+        data = run_generate_prompt(paths, settings, real_work_dir, payload.get("materialName"))
+        llm_logs.add(scene="提示词生成", model=settings["model_name"],
+                     prompt_summary=f"材料: {payload.get('materialName', '全部')}", 
+                     response_summary=data.get("prompt_template", "")[:500],
+                     success=True, elapsed_s=time.time() - start)
+    except ValueError as exc:
+        llm_logs.add(scene="提示词生成", model=settings["model_name"],
+                     prompt_summary=f"材料: {payload.get('materialName', '全部')}",
+                     error=str(exc), success=False, elapsed_s=time.time() - start)
+        fail(400, str(exc))
+    return {"data": data}
 
 
 @app.post("/api/generate/verify")
 async def generate_verify(payload: dict[str, Any], request: Request, user: Any = Depends(current_user)):
+    settings = request.app.state.ui_settings.load_front()
+    paths = request.app.state.paths
+    # materialDir 可能是前端传回的后端返回的路径（已包含 workspaces/{user_id}/...）
+    # 或者是用户编辑后的路径；直接使用（不做二次映射避免路径错误）
     material_dir = Path(payload["materialDir"])
-    image_path = find_media_file(material_dir)
-    if image_path is None:
-        fail(400, "no image found in material directory")
-    return {"data": {"image_file": image_path.name, "extraction_output": "", "success": True, "error": None, "elapsed": "0.0"}}
+    prompt_text = payload.get("promptText", "")
+    model_cfg_id = payload.get("modelCfgId")
+    model_id = resolve_model_id(settings, model_cfg_id)
+    result = run_verify_extraction(material_dir, prompt_text, model_id, settings["api_key"],
+                                   llm_logs=request.app.state.llm_logs)
+    if not result["success"]:
+        fail(400, result["error"])
+    return {"data": result}
 
 
 @app.post("/api/generate/save-prompt")
@@ -747,7 +1109,11 @@ async def save_prompt(body: SavePromptRequest, user: Any = Depends(current_user)
 
 @app.post("/api/generate/factor-json")
 async def generate_factor_json(payload: dict[str, Any], request: Request, user: Any = Depends(current_user)):
-    return {"data": run_factor_json(request.app.state.paths, payload["workDir"])}
+    paths = request.app.state.paths
+    real_work_dir = _resolve_user_work_dir(paths, payload["workDir"], user.id)
+    group_size = int(payload.get("groupSize") or 4)
+    materials = payload.get("materials") or None
+    return {"data": run_factor_json(paths, real_work_dir, group_size=group_size, materials=materials)}
 
 
 @app.get("/api/files/read")
@@ -769,10 +1135,40 @@ async def put_file_content(payload: dict[str, Any], user: Any = Depends(current_
 
 
 @app.get("/api/files/download")
-async def download_file(path: str = Query(...), user: Any = Depends(current_user)):
-    target = Path(path)
+async def download_file(path: str = Query(...), request: Request = None, user: Any = Depends(current_user)):
+    target = _resolve_user_file_path(request.app.state.paths, path, user.id)
     media_type, _ = mimetypes.guess_type(str(target))
     return FileResponse(target, media_type=media_type or "application/octet-stream", filename=target.name)
+
+
+@app.get("/api/files/download-batch")
+async def download_batch_files(pathsJson: str = Query(...), request: Request = None, user: Any = Depends(current_user)):
+    try:
+        requested_paths = json.loads(pathsJson)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=400, detail="invalid paths json") from exc
+
+    if not isinstance(requested_paths, list) or not requested_paths:
+        raise HTTPException(status_code=400, detail="no files requested")
+
+    file_paths = []
+    for raw_path in requested_paths:
+        if not isinstance(raw_path, str):
+            raise HTTPException(status_code=400, detail="invalid file path")
+        target = _resolve_user_file_path(request.app.state.paths, raw_path, user.id)
+        if not target.exists() or not target.is_file():
+            raise HTTPException(status_code=404, detail=f"file not found: {target.name}")
+        file_paths.append(target)
+
+    archive = build_zip_archive(file_paths)
+    filename = f"要素JSON_批量下载_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip"
+    return Response(
+        content=archive,
+        media_type="application/zip",
+        headers={
+            "Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}",
+        },
+    )
 
 
 @app.post("/api/files/open-location")
@@ -792,32 +1188,65 @@ async def browse(path: str = Query(...), user: Any = Depends(current_user)):
 
 @app.post("/api/tasks/{kind}")
 async def start_task(kind: str, payload: dict[str, Any], request: Request, user: Any = Depends(current_user)):
-    task = request.app.state.tasks.create(kind.replace("-", "_"), user.id)
+    task = request.app.state.tasks.create(kind.replace("-", "_"), user.id, request.app.state.data)
     request.app.state.tasks.mark_running(task.id, 5)
 
     def worker() -> None:
+        llm_logs = request.app.state.llm_logs
         try:
             settings = request.app.state.ui_settings.load_front()
+            paths = request.app.state.paths
+            _ensure_user_dirs(paths, user.id)
+            real_work_dir = _resolve_user_work_dir(paths, payload.get("workDir", ""), user.id)
             if kind == "generate":
-                result = run_generate_prompt(request.app.state.paths, settings, payload["workDir"], payload.get("materialName"))
+                t0 = time.time()
+                result = run_generate_prompt(paths, settings, real_work_dir, payload.get("materialName"))
+                llm_logs.add(scene="提示词生成", model=settings["model_name"],
+                             prompt_summary=f"材料: {payload.get('materialName', '全部')}",
+                             response_summary=result.get("prompt_template", "")[:500],
+                             success=True, elapsed_s=time.time() - t0)
                 request.app.state.tasks.complete(task.id, result)
             elif kind == "verify-extraction":
                 material_dir = Path(payload["materialDir"])
-                image_path = find_media_file(material_dir)
-                if image_path is None:
-                    raise ValueError("no image found in material directory")
-                request.app.state.tasks.complete(task.id, {"image_file": image_path.name, "extraction_output": "", "success": True, "error": None, "elapsed": "0.0"})
+                prompt_text = payload.get("promptText", "")
+                model_cfg_id = payload.get("modelCfgId")
+                model_id = resolve_model_id(settings, model_cfg_id)
+                result = run_verify_extraction(material_dir, prompt_text, model_id, settings["api_key"],
+                                               llm_logs=llm_logs)
+                request.app.state.tasks.complete(task.id, result)
             elif kind == "classify":
-                result = run_classify(request.app.state.paths, settings, payload["workDir"], int(payload.get("maxRounds") or 2), lambda line: request.app.state.tasks.append_log(task.id, line))
+                t0 = time.time()
+                result = run_classify(paths, settings, real_work_dir, int(payload.get("maxRounds") or 2), lambda line: request.app.state.tasks.append_log(task.id, line))
+                llm_logs.add(scene="材料分类", model=settings["model_name"],
+                             prompt_summary=f"工作目录: {Path(real_work_dir).name}",
+                             response_summary=json.dumps(result, ensure_ascii=False)[:500] if result else "",
+                             success=True, elapsed_s=time.time() - t0)
                 request.app.state.tasks.complete(task.id, result)
             elif kind == "test-classify-prompt":
-                result = run_test_classify(request.app.state.paths, settings, payload["workDir"], payload["promptType"], payload["promptContent"], lambda line: request.app.state.tasks.append_log(task.id, line))
+                result = run_test_classify(paths, settings, real_work_dir, payload["promptType"], payload["promptContent"], lambda line: request.app.state.tasks.append_log(task.id, line))
                 request.app.state.tasks.complete(task.id, result)
             elif kind == "factor-json":
-                result = run_factor_json(request.app.state.paths, payload["workDir"])
+                fj_group_size = int(payload.get("groupSize") or 4)
+                fj_materials = payload.get("materials") or None
+                result = run_factor_json(paths, real_work_dir, group_size=fj_group_size, materials=fj_materials)
                 request.app.state.tasks.complete(task.id, result)
             elif kind == "review-rule":
-                result = run_review_rule(request.app.state.paths, settings, payload["workDir"], bool(payload.get("useLlm")), lambda line: request.app.state.tasks.append_log(task.id, line))
+                t0 = time.time()
+                result = run_review_rule(
+                    paths,
+                    settings,
+                    real_work_dir,
+                    bool(payload.get("useLlm")),
+                    lambda line: request.app.state.tasks.append_log(task.id, line),
+                    api_key=payload.get("apiKey"),
+                    base_url=payload.get("baseUrl"),
+                    model=payload.get("model"),
+                    materials=payload.get("materials") or None,
+                )
+                llm_logs.add(scene="审查规则生成", model=payload.get("model") or settings["model_name"],
+                             prompt_summary=f"工作目录: {Path(real_work_dir).name}, useLlm={payload.get('useLlm')}",
+                             response_summary=json.dumps(result, ensure_ascii=False)[:500] if result else "",
+                             success=True, elapsed_s=time.time() - t0)
                 request.app.state.tasks.complete(task.id, result)
             elif kind == "regenerate-keypoint":
                 result = {
@@ -835,6 +1264,11 @@ async def start_task(kind: str, payload: dict[str, Any], request: Request, user:
         except Exception as exc:
             request.app.state.tasks.append_log(task.id, f"[error] {exc}")
             request.app.state.tasks.fail(task.id, str(exc))
+            scene_map = {"generate": "提示词生成", "classify": "材料分类", "review-rule": "审查规则生成",
+                         "verify-extraction": "验证提取", "factor-json": "要素JSON生成"}
+            llm_logs.add(scene=scene_map.get(kind, kind), model="unknown",
+                         prompt_summary=f"任务失败: {kind}", error=str(exc),
+                         success=False, elapsed_s=0)
 
     threading.Thread(target=worker, daemon=True).start()
     return task.model_dump()
@@ -857,18 +1291,19 @@ async def get_task_logs(task_id: str, request: Request, user: Any = Depends(curr
 
 
 @app.get("/api/logs")
-async def llm_logs(admin: Any = Depends(current_admin)):
-    return {"entries": [], "total": 0, "page": 1, "pageSize": 20}
+async def llm_logs(request: Request, page: int = Query(default=1), pageSize: int = Query(default=20), admin: Any = Depends(current_admin)):
+    return request.app.state.llm_logs.list(page=page, page_size=pageSize)
 
 
 @app.delete("/api/logs")
-async def clear_llm_logs(admin: Any = Depends(current_admin)):
+async def clear_llm_logs(request: Request, admin: Any = Depends(current_admin)):
+    request.app.state.llm_logs.clear()
     return {"ok": True}
 
 
 @app.get("/api/cases")
 async def cases(request: Request, user: Any = Depends(current_user)):
-    return load_case_library(request.app.state.paths)
+    return load_case_library(request.app.state.paths, request.app.state.data)
 
 
 @app.post("/api/cases/import-json")
@@ -878,31 +1313,15 @@ async def import_cases_json(payload: dict[str, Any], request: Request, admin: An
         source = {"version": "1.0", "cases": source}
     if not isinstance(source, dict) or not isinstance(source.get("cases"), list):
         fail(400, "invalid case library json")
-    if bool(payload.get("overwrite")):
-        save_case_library(request.app.state.paths, source)
-        return {"imported_count": len(source["cases"]), "imported": len(source["cases"]), "skipped": 0, "failed": 0, "total_cases": len(source["cases"])}
-    current = load_case_library(request.app.state.paths)
-    current_cases = current.setdefault("cases", [])
-    seen = {json.dumps(item, ensure_ascii=False, sort_keys=True) for item in current_cases}
-    imported = 0
-    skipped = 0
-    for item in source["cases"]:
-        key = json.dumps(item, ensure_ascii=False, sort_keys=True)
-        if key in seen:
-            skipped += 1
-            continue
-        current_cases.append(item)
-        seen.add(key)
-        imported += 1
-    save_case_library(request.app.state.paths, current)
-    return {"imported_count": imported, "imported": imported, "skipped": skipped, "failed": 0, "total_cases": len(current_cases)}
+    cases_list = source["cases"]
+    result = request.app.state.data.import_cases(cases_list, overwrite=bool(payload.get("overwrite")))
+    total = request.app.state.data.list_cases()
+    return {"imported_count": result["imported"], "imported": result["imported"], "skipped": result["skipped"], "failed": 0, "total_cases": len(total)}
 
 
 @app.post("/api/cases/import-txt")
 async def import_cases_txt(payload: dict[str, Any], request: Request, admin: Any = Depends(current_admin)):
     file_paths = payload.get("filePaths") or []
-    library = load_case_library(request.app.state.paths)
-    cases = library.setdefault("cases", [])
     imported = 0
     skipped = 0
     failed = 0
@@ -918,49 +1337,57 @@ async def import_cases_txt(payload: dict[str, Any], request: Request, admin: Any
             text = line.strip()
             if not text:
                 continue
-            cases.append({"id": str(uuid4()), "material_name": path.stem, "factor_name": f"Line {index}", "extraction_rule": text})
-            imported += 1
-            added += 1
+            try:
+                request.app.state.data.create_case(
+                    user_id=admin.id,
+                    material_name=path.stem,
+                    factor_name=f"Line {index}",
+                    extraction_rule=text,
+                    metadata={"id": str(uuid4()), "material_name": path.stem, "factor_name": f"Line {index}", "extraction_rule": text}
+                )
+                added += 1
+            except Exception:
+                skipped += 1
+        imported += added
         file_results.append({"file": path.name, "added": added, "skipped": 0})
-    save_case_library(request.app.state.paths, library)
-    return {"imported": imported, "skipped": skipped, "failed": failed, "total_cases": len(cases), "file_results": file_results}
+    total = request.app.state.data.list_cases()
+    return {"imported": imported, "skipped": skipped, "failed": failed, "total_cases": len(total), "file_results": file_results}
 
 
 @app.delete("/api/cases/{case_id}")
 async def delete_case(case_id: str, request: Request, admin: Any = Depends(current_admin)):
-    library = load_case_library(request.app.state.paths)
-    current = library.get("cases", [])
-    next_cases = [item for item in current if str(item.get("id", "")) != case_id]
-    if len(next_cases) == len(current):
+    if not request.app.state.data.delete_case(case_id):
         fail(404, "case not found")
-    library["cases"] = next_cases
-    save_case_library(request.app.state.paths, library)
     return {"ok": True}
 
 
 @app.get("/api/review-rules")
 async def review_rules(request: Request, user: Any = Depends(current_user)):
-    return load_review_rule_library_file(request.app.state.paths)
+    return load_review_rule_library_file(request.app.state.paths, request.app.state.data)
 
 
 @app.put("/api/review-rules")
 async def save_review_rules(payload: list[Any], request: Request, admin: Any = Depends(current_admin)):
-    save_review_rule_library_file(request.app.state.paths, payload)
+    save_review_rule_library_file(request.app.state.paths, request.app.state.data, payload)
     return {"success": True}
 
 
 @app.delete("/api/review-rules")
 async def clear_review_rules(request: Request, admin: Any = Depends(current_admin)):
-    save_review_rule_library_file(request.app.state.paths, [])
+    save_review_rule_library_file(request.app.state.paths, request.app.state.data, [])
     return {"success": True}
 
 
 @app.post("/api/invoke/{command}")
 async def invoke(command: str, payload: dict[str, Any], request: Request, user: Any = Depends(current_user)):
+    paths = request.app.state.paths
+    _ensure_user_dirs(paths, user.id)
+    work_dir = payload.get("workDir", "")
+    real_work_dir = _resolve_user_work_dir(paths, work_dir, user.id)
     if command == "read_factors":
-        return read_factors_script(request.app.state.paths, payload["workDir"])
+        return read_factors_script(paths, real_work_dir)
     if command == "get_materials":
-        root = Path(payload["workDir"])
+        root = Path(real_work_dir)
         return [{"name": entry.name, "path": str(entry), "image_count": sum(1 for child in entry.iterdir() if child.is_file())} for entry in root.iterdir() if entry.is_dir()]
     if command == "read_json_file":
         return json.loads(Path(payload["path"]).read_text(encoding="utf-8"))
@@ -976,12 +1403,12 @@ async def invoke(command: str, payload: dict[str, Any], request: Request, user: 
         return None
     if command == "get_material_categories":
         names = []
-        for item in read_factors_script(request.app.state.paths, payload["workDir"]):
+        for item in read_factors_script(paths, real_work_dir):
             if item.get("material"):
                 names.append(item["material"])
         return sorted(list(dict.fromkeys(names)))
     if command == "get_pending_files":
-        root = Path(payload["workDir"])
+        root = Path(real_work_dir)
         for name in ("待分类材料", "待分类"):
             if (root / name).exists():
                 root = root / name
@@ -1008,11 +1435,10 @@ async def invoke(command: str, payload: dict[str, Any], request: Request, user: 
         ]
     if command == "search_cases":
         query = str(payload.get("query", "")).lower()
-        library = load_case_library(request.app.state.paths)
-        cases = library.get("cases", [])
+        all_cases = request.app.state.data.list_cases()
         return {
             "cases": [
-                item for item in cases
+                item for item in all_cases
                 if query in json.dumps(item, ensure_ascii=False).lower()
             ]
         }
@@ -1020,18 +1446,22 @@ async def invoke(command: str, payload: dict[str, Any], request: Request, user: 
         source_dir = Path(payload.get("sourceDir", ""))
         if not source_dir.exists() or not source_dir.is_dir():
             fail(400, "sourceDir does not exist")
-        library = load_case_library(request.app.state.paths)
-        cases = library.setdefault("cases", [])
         imported = 0
         for txt_file in source_dir.glob("*.txt"):
             for index, line in enumerate(txt_file.read_text(encoding="utf-8").splitlines(), start=1):
                 text = line.strip()
                 if not text:
                     continue
-                cases.append({"id": str(uuid4()), "material_name": txt_file.stem, "factor_name": f"Line {index}", "extraction_rule": text})
+                request.app.state.data.create_case(
+                    user_id=request.app.state.auth.get_user_by_username("admin").get("id") or "admin",
+                    material_name=txt_file.stem,
+                    factor_name=f"Line {index}",
+                    extraction_rule=text,
+                    metadata={"id": str(uuid4()), "material_name": txt_file.stem, "factor_name": f"Line {index}", "extraction_rule": text}
+                )
                 imported += 1
-        save_case_library(request.app.state.paths, library)
-        return {"imported": imported, "total_cases": len(cases)}
+        total = request.app.state.data.list_cases()
+        return {"imported": imported, "total_cases": len(total)}
     fail(404, f"unsupported command: {command}")
 
 

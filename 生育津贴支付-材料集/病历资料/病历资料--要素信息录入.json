@@ -57,5 +57,29 @@
       "factor_trans": ""
     }
   ],
-  "promptGroups": []
+  "promptGroups": [
+    {
+      "groupname": "分组1",
+      "grouptype": "2",
+      "ordernum": 1,
+      "prompt_template": "",
+      "modelguid": "",
+      "factors": [
+        "姓名",
+        "性别",
+        "生育时间",
+        "生育情况"
+      ]
+    },
+    {
+      "groupname": "分组2",
+      "grouptype": "2",
+      "ordernum": 2,
+      "prompt_template": "",
+      "modelguid": "",
+      "factors": [
+        "医院印章"
+      ]
+    }
+  ]
 }

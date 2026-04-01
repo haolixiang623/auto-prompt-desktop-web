@@ -386,6 +386,74 @@
           </div>
           <p class="text-sm text-gray-500">用当前提示词对样本执行真实提取，确认结果正确后完成</p>
 
+          <!-- 验证材料上传区 -->
+          <div class="bg-white rounded-xl border p-4 space-y-3">
+            <div class="flex items-center justify-between">
+              <div class="flex items-center gap-2">
+                <span class="text-sm font-semibold text-gray-700">验证材料</span>
+                <span v-if="verifyWorkDir" class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs bg-green-50 text-green-700 border border-green-200">
+                  <svg class="w-3 h-3" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"/></svg>
+                  已上传验证材料
+                </span>
+                <span v-else class="text-xs text-gray-400">默认使用原始工作区材料</span>
+              </div>
+              <div class="flex items-center gap-2">
+                <div class="relative"
+                  @mouseenter="showVerifyGuide = true"
+                  @mouseleave="showVerifyGuide = false">
+                  <button type="button"
+                    class="w-8 h-8 rounded-lg border border-amber-200 bg-amber-50 text-amber-600 flex items-center justify-center hover:bg-amber-100 transition"
+                    aria-label="查看验证材料格式要求"
+                    @click="showVerifyGuide = !showVerifyGuide">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M12 22C6.477 22 2 17.523 2 12S6.477 2 12 2s10 4.477 10 10-4.477 10-10 10z" />
+                    </svg>
+                  </button>
+                  <Transition name="fade">
+                    <div v-if="showVerifyGuide"
+                      class="absolute right-0 top-10 z-30 w-72 rounded-xl border border-amber-200 bg-white p-4 shadow-2xl text-left">
+                      <p class="text-xs font-bold text-amber-700 mb-2">验证材料目录格式要求</p>
+                      <div class="text-xs text-gray-600 space-y-1 font-mono bg-gray-50 rounded-lg p-3 border">
+                        <p>验证材料文件夹/</p>
+                        <p class="pl-3">├── 材料名A/</p>
+                        <p class="pl-6">├── sample1.jpg</p>
+                        <p class="pl-6">└── sample2.png</p>
+                        <p class="pl-3">├── 材料名B/</p>
+                        <p class="pl-6">└── sample.pdf</p>
+                        <p class="pl-3">└── ...</p>
+                      </div>
+                      <ul class="mt-2 text-xs text-gray-500 space-y-1 list-disc pl-3.5">
+                        <li><b>子文件夹名</b>必须与选中材料名一致</li>
+                        <li>每个子文件夹放入待验证的<b>图片或PDF</b></li>
+                        <li>不需要 factors.xlsx 等配置文件</li>
+                        <li>验证时取子文件夹中<b>第一张图片</b>进行提取</li>
+                      </ul>
+                    </div>
+                  </Transition>
+                </div>
+                <button @click="selectVerifyWorkDir"
+                  class="px-3 py-1.5 text-xs font-medium rounded-lg transition"
+                  :class="verifyWorkDir
+                    ? 'bg-gray-100 text-gray-600 hover:bg-gray-200 border border-gray-200'
+                    : 'bg-blue-600 text-white hover:bg-blue-700'">
+                  {{ verifyWorkDir ? '重新上传' : '上传验证材料...' }}
+                </button>
+                <button v-if="verifyWorkDir" @click="verifyWorkDir = ''; verifyResults = Object.create(null)"
+                  class="px-2 py-1.5 text-xs text-gray-400 hover:text-red-500 transition" title="清除验证材料，恢复使用原始工作区">
+                  <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+                  </svg>
+                </button>
+              </div>
+            </div>
+            <div v-if="verifyWorkDir" class="flex items-center gap-2 px-3 py-2 bg-green-50 border border-green-100 rounded-lg">
+              <svg class="w-4 h-4 text-green-500 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"/>
+              </svg>
+              <span class="text-xs text-green-700 truncate flex-1">{{ verifyWorkDir }}</span>
+            </div>
+          </div>
+
           <!-- 材料 tab 切换（多选时） -->
           <div v-if="selectedMaterials.length > 1" class="flex flex-wrap gap-2">
             <button v-for="m in selectedMaterials" :key="m.name"
@@ -426,7 +494,7 @@
               </svg>
               {{ isVerifying ? `验证中... ${verifyElapsed}s` : verifyResults[activeVerifyMaterial] ? '重新验证' : '执行验证提取' }}
             </button>
-            <span class="text-xs text-gray-400">调用 Qwen VL 对「{{ activeVerifyMaterial }}」样本执行提取</span>
+            <span class="text-xs text-gray-400">调用 Qwen VL 对「{{ activeVerifyMaterial }}」样本执行提取{{ verifyWorkDir ? '（验证材料）' : '' }}</span>
           </div>
 
           <!-- 验证中 loading -->
@@ -590,6 +658,12 @@
                 <span class="text-green-600 font-medium">✓ {{ fjResults.filter(r => r.success).length }} 成功</span>
                 <span v-if="fjResults.filter(r => !r.success).length > 0" class="text-red-500">✗ {{ fjResults.filter(r => !r.success).length }} 失败</span>
                 <span class="text-gray-400">共 {{ fjResults.length }} 个材料</span>
+                <button @click="fjDownloadAll"
+                  :disabled="fjDownloadingAll || fjResults.filter(r => r.success).length === 0"
+                  class="px-3 py-1 rounded text-xs transition"
+                  :class="fjResults.filter(r => r.success).length > 0 && !fjDownloadingAll ? 'bg-blue-600 text-white hover:bg-blue-700' : 'bg-gray-200 text-gray-400 cursor-not-allowed'">
+                  {{ fjDownloadingAll ? '下载中...' : '全部下载JSON' }}
+                </button>
               </div>
             </div>
             <div class="divide-y">
@@ -621,9 +695,9 @@
                       :class="fjPreviewItem === r ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'">
                       {{ fjPreviewItem === r ? '收起' : '预览' }}
                     </button>
-                    <button @click="fjOpenInFinder(r.output)"
-                      class="flex items-center gap-1 px-2 py-1 bg-gray-100 text-gray-700 rounded text-xs hover:bg-gray-200">
-                      打开位置
+                    <button @click="fjDownloadJson(r)"
+                      class="flex items-center gap-1 px-2 py-1 bg-blue-100 text-blue-700 rounded text-xs hover:bg-blue-200">
+                      下载JSON
                     </button>
                     <button @click="fjCopyJson(r)"
                       class="flex items-center gap-1 px-2 py-1 rounded text-xs transition"
@@ -742,12 +816,15 @@ const verifyResults = ref({})       // { materialName: VerifyResult }
 const activeVerifyMaterial = ref('')
 const verifyElapsed = ref(0)
 let verifyTimer = null
+const verifyWorkDir = ref('')       // 验证用的另一套材料工作区（为空时使用原始 workDir）
+const showVerifyGuide = ref(false)
 
 // Step5: 要素JSON生成
 const fjIsRunning = ref(false)
 const fjResults = ref([])
 const fjPreviewItem = ref(null)
 const fjCopiedItem = ref(null)
+const fjDownloadingAll = ref(false)
 const fjGroupSize = ref(4)
 
 // 计算属性
@@ -963,6 +1040,19 @@ async function selectWorkDirFromService() {
   }
 }
 
+async function selectVerifyWorkDir() {
+  try {
+    const selected = await invoke('select_directory')
+    if (!selected) return
+    verifyWorkDir.value = selected
+    verifyResults.value = {}
+    addLog(`已上传验证材料工作区: ${selected}`, 'info')
+    addLog('后续验证将使用新上传的材料（而非原始工作区材料）', 'info')
+  } catch (error) {
+    addLog(`上传验证材料失败: ${error}`, 'error')
+  }
+}
+
 async function loadDirectoryData() {
   factors.value = []
   materials.value = []
@@ -1018,9 +1108,17 @@ async function goStep2() {
         modelCfgId: selectedModelId.value || null
       })
       const elapsed = ((Date.now() - matStart) / 1000).toFixed(1)
-      batchResults.value[mat.name] = { ...generateResult.data, success: true, elapsed }
+      const resultData = { ...generateResult.data }
+      if (!resultData.prompt_template?.trim() && resultData.output_file) {
+        const fileResult = await apiClient.get('/api/files/read', { path: resultData.output_file })
+        resultData.prompt_template = fileResult?.data?.content || ''
+      }
+      if (!resultData.prompt_template?.trim()) {
+        throw new Error('提示词文件为空，未生成有效内容')
+      }
+      batchResults.value[mat.name] = { ...resultData, success: true, elapsed }
       addLog(`[${mat.name}] 生成成功！耗时 ${elapsed}s`, 'success')
-      if (generateResult.data.output_file) addLog(`已保存: ${generateResult.data.output_file}`, 'success')
+      if (resultData.output_file) addLog(`已保存: ${resultData.output_file}`, 'success')
     } catch (error) {
       const elapsed = ((Date.now() - matStart) / 1000).toFixed(1)
       const errStr = String(error)
@@ -1059,9 +1157,10 @@ async function runVerify() {
   verifyTimer = setInterval(() => {
     verifyElapsed.value = Math.floor((Date.now() - verifyStart) / 1000)
   }, 1000)
-  addLog(`[验证] 开始验证「${matName}」...`, 'info')
+  const baseDir = verifyWorkDir.value || workDir.value
+  addLog(`[验证] 开始验证「${matName}」...${verifyWorkDir.value ? '（使用验证材料）' : ''}`, 'info')
   try {
-    const materialDir = `${workDir.value}/${matName}`
+    const materialDir = `${baseDir}/${matName}`
     const promptText = activeVerifyPrompt.value
     const vr = await apiClient.post('/api/generate/verify', { materialDir, promptText, modelCfgId: selectedModelId.value || null })
     verifyResults.value = { ...verifyResults.value, [matName]: vr.data }
@@ -1132,6 +1231,7 @@ function goNextMaterial() {
   selectedMaterials.value = []
   batchResults.value = {}
   verifyResults.value = {}
+  verifyWorkDir.value = ''
   editablePrompt.value = ''
   promptModified.value = false
   activeBatchMaterial.value = ''
@@ -1139,6 +1239,7 @@ function goNextMaterial() {
   fjResults.value = []
   fjPreviewItem.value = null
   fjCopiedItem.value = null
+  fjDownloadingAll.value = false
   currentStep.value = 1
 }
 
@@ -1146,6 +1247,7 @@ function goToStep5() {
   fjResults.value = []
   fjPreviewItem.value = null
   fjCopiedItem.value = null
+  fjDownloadingAll.value = false
   currentStep.value = 5
 }
 
@@ -1155,7 +1257,8 @@ async function generateFactorJson() {
   fjResults.value = []
   addLog(`开始生成要素JSON（每组最多 ${fjGroupSize.value} 个要素）...`, 'info')
   try {
-    const res = await apiClient.post('/api/generate/factor-json', { workDir: workDir.value, groupSize: fjGroupSize.value })
+    const materialNames = selectedMaterials.value.map(m => m.name)
+    const res = await apiClient.post('/api/generate/factor-json', { workDir: workDir.value, groupSize: fjGroupSize.value, materials: materialNames })
     fjResults.value = res.data
     const ok = res.data.filter(r => r.success).length
     addLog(`生成完成！共 ${res.data.length} 个材料，成功 ${ok} 个`, 'success')
@@ -1179,11 +1282,28 @@ async function fjTogglePreview(r) {
   }
 }
 
-async function fjOpenInFinder(path) {
+function fjDownloadJson(r) {
   try { 
-    await apiClient.post('/api/files/open-location', { path })
+    apiClient.open('/api/files/download', { path: r.output })
+    const filename = r.output.split(/[/\\]/).pop()
+    addLog(`开始下载: ${filename}`, 'success')
   }
-  catch (e) { addLog(`打开位置失败: ${e}`, 'error') }
+  catch (e) { addLog(`下载失败: ${e}`, 'error') }
+}
+
+function fjDownloadAll() {
+  const successPaths = fjResults.value.filter(r => r.success).map(r => r.output)
+  if (successPaths.length === 0 || fjDownloadingAll.value) return
+
+  fjDownloadingAll.value = true
+  try {
+    apiClient.open('/api/files/download-batch', { pathsJson: JSON.stringify(successPaths) })
+    addLog(`开始批量下载 ${successPaths.length} 个 JSON 文件`, 'success')
+  } catch (e) {
+    addLog(`批量下载失败: ${e}`, 'error')
+  } finally {
+    fjDownloadingAll.value = false
+  }
 }
 
 async function fjCopyJson(r) {
@@ -1209,6 +1329,7 @@ async function clear() {
   selectedMaterials.value = []
   batchResults.value = {}
   verifyResults.value = {}
+  verifyWorkDir.value = ''
   editablePrompt.value = ''
   promptModified.value = false
   activeBatchMaterial.value = ''
@@ -1217,6 +1338,7 @@ async function clear() {
   fjResults.value = []
   fjPreviewItem.value = null
   fjCopiedItem.value = null
+  fjDownloadingAll.value = false
   await loadModels()
 }
 </script>

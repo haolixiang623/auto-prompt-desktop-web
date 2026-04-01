@@ -49,7 +49,7 @@
       </div>
     </div>
 
-    <!-- 结果 -->
+      <!-- 结果 -->
     <div v-if="results.length > 0" class="bg-white rounded-xl shadow overflow-hidden">
       <div class="flex items-center justify-between px-5 py-4 border-b">
         <h3 class="font-semibold text-gray-800">生成结果</h3>
@@ -59,6 +59,12 @@
             ✗ {{ results.filter(r => !r.success).length }} 失败
           </span>
           <span class="text-gray-400">共 {{ results.length }} 个</span>
+          <button @click="downloadAll" :disabled="!results.filter(r => r.success).length"
+            class="px-3 py-1 rounded text-xs transition"
+            :class="results.filter(r => r.success).length > 0 ? 'bg-blue-600 text-white hover:bg-blue-700' : 'bg-gray-300 text-gray-500 cursor-not-allowed'">
+            <span v-if="downloadingAll">下载中...</span>
+            <span v-else>全部下载JSON</span>
+          </button>
         </div>
       </div>
 
@@ -90,12 +96,12 @@
                 </svg>
                 {{ previewItem === r ? '收起' : '预览' }}
               </button>
-              <button @click="openInFinder(r.output)"
-                class="flex items-center gap-1 px-2.5 py-1 bg-gray-100 text-gray-700 rounded-lg text-xs hover:bg-gray-200 transition">
+              <button @click="downloadJson(r)"
+                class="flex items-center gap-1 px-2.5 py-1 bg-blue-100 text-blue-700 rounded-lg text-xs hover:bg-blue-200 transition">
                 <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"/>
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/>
                 </svg>
-                打开位置
+                下载JSON
               </button>
               <button @click="copyJson(r)"
                 class="flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs transition"
@@ -131,7 +137,9 @@
   import { ref, onMounted, onUnmounted, nextTick } from 'vue'
   import { useRoute } from 'vue-router'
   import { apiClient } from '../services/apiClient.js'
-  // Tauri listen removed
+  import { parseJsonFilePayload } from '../services/jsonFile.js'
+  import { listen } from '../tauri/event.js'
+  import { invoke } from '../tauri/tauri.js'
   import { getScopedStorageItem, removeScopedStorageItem, setScopedStorageItem } from '../services/authState.js'
 
 const route = useRoute()
@@ -143,6 +151,7 @@ const results = ref([])
 const logContainer = ref(null)
 const previewItem = ref(null)
 const copiedItem = ref(null)
+const downloadingAll = ref(false)
 
 let unlistenLog = null
 
@@ -232,7 +241,7 @@ async function togglePreview(r) {
     r.loadingPreview = true
     try {
       const content = await invoke('read_json_file', { path: r.output })
-      r.previewContent = JSON.stringify(JSON.parse(content), null, 2)
+      r.previewContent = JSON.stringify(parseJsonFilePayload(content), null, 2)
     } catch (e) {
       r.previewError = String(e)
     } finally {
@@ -241,11 +250,13 @@ async function togglePreview(r) {
   }
 }
 
-async function openInFinder(path) {
+async function downloadJson(r) {
   try {
-    await invoke('open_in_finder', { path })
+    const filename = r.output.split(/[/\\]/).pop()
+    apiClient.open('/api/files/download', { path: r.output })
+    addLog(`已下载: ${filename}`, 'success')
   } catch (e) {
-    addLog(`打开位置失败: ${e}`, 'error')
+    addLog(`下载失败: ${e}`, 'error')
   }
 }
 
@@ -254,13 +265,32 @@ async function copyJson(r) {
     let content = r.previewContent
     if (!content) {
       const raw = await invoke('read_json_file', { path: r.output })
-      content = JSON.stringify(JSON.parse(raw), null, 2)
+      content = JSON.stringify(parseJsonFilePayload(raw), null, 2)
     }
     await navigator.clipboard.writeText(content)
     copiedItem.value = r.material
     setTimeout(() => { copiedItem.value = null }, 2000)
   } catch (e) {
     addLog(`复制失败: ${e}`, 'error')
+  }
+}
+
+async function downloadAll() {
+  const successResults = results.value.filter(r => r.success)
+  if (successResults.length === 0) return
+
+  downloadingAll.value = true
+  addLog('开始批量下载 JSON...', 'info')
+
+  try {
+    apiClient.open('/api/files/download-batch', {
+      pathsJson: JSON.stringify(successResults.map(r => r.output)),
+    })
+    addLog(`开始下载 ${successResults.length} 个 JSON 文件`, 'success')
+  } catch (e) {
+    addLog(`批量下载失败: ${e}`, 'error')
+  } finally {
+    downloadingAll.value = false
   }
 }
 
@@ -271,5 +301,6 @@ function clear() {
   results.value = []
   previewItem.value = null
   copiedItem.value = null
+  downloadingAll.value = false
 }
 </script>

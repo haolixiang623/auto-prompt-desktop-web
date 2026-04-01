@@ -727,7 +727,7 @@ def process_material_rules(material_name, keypoints_info, use_llm=False,
 
 # ─────────────────────────── 入口 ─────────────────────────────────
 
-def main(work_dir, use_llm=False, api_key=None, base_url=None, model=None, timeout=120):
+def main(work_dir, use_llm=False, api_key=None, base_url=None, model=None, timeout=120, material_filter=None):
     work_dir = os.path.abspath(work_dir)
 
     if not os.path.isdir(work_dir):
@@ -752,6 +752,14 @@ def main(work_dir, use_llm=False, api_key=None, base_url=None, model=None, timeo
     if not rules_dict:
         print("[错误] 未读取到任何审查要点信息（审查要点名称列为空）")
         sys.exit(1)
+
+    # 按用户选择过滤材料
+    if material_filter:
+        filter_set = set(material_filter)
+        rules_dict = {k: v for k, v in rules_dict.items() if k in filter_set}
+        if not rules_dict:
+            print(f"[错误] 指定的材料在 Excel 中均未找到: {material_filter}")
+            sys.exit(1)
 
     import time
     total_kp = sum(len(v) for v in rules_dict.values())
@@ -826,6 +834,8 @@ if __name__ == '__main__':
     parser.add_argument('--base-url', default='https://api.openai.com/v1', help='LLM API Base URL')
     parser.add_argument('--model', default='gpt-4o-mini', help='LLM 模型名称')
     parser.add_argument('--timeout', type=int, default=120, help='LLM 调用超时时间（秒）')
+    parser.add_argument('--materials', nargs='*', default=None,
+                        help='仅处理指定的材料名称（不指定则处理全部）')
     args = parser.parse_args()
 
     main(
@@ -835,4 +845,5 @@ if __name__ == '__main__':
         base_url=args.base_url,
         model=args.model,
         timeout=args.timeout,
+        material_filter=args.materials,
     )

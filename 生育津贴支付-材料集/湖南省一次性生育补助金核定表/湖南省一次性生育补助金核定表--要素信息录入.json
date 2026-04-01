@@ -123,7 +123,7 @@
       "factor_trans": ""
     },
     {
-      "factorname": "年月日",
+      "factorname": "年月日（个人承诺）",
       "factortype": "1",
       "factor_prompt": "",
       "factoruse": "",
@@ -145,10 +145,10 @@
       "factor_trans": ""
     },
     {
-      "factorname": "年月日",
+      "factorname": "日期（企业承诺）",
       "factortype": "1",
       "factor_prompt": "",
-      "factoruse": "",
+      "factoruse": "企业承诺日期，一般在企业印章附近",
       "ordernum": 14,
       "remark": "",
       "is_usermsg": "0",
@@ -189,5 +189,68 @@
       "factor_trans": ""
     }
   ],
-  "promptGroups": []
+  "promptGroups": [
+    {
+      "groupname": "分组1",
+      "grouptype": "2",
+      "ordernum": 1,
+      "prompt_template": "",
+      "modelguid": "",
+      "factors": [
+        "单位名称",
+        "申领人姓名",
+        "申领人身份证号码",
+        "联系电话"
+      ]
+    },
+    {
+      "groupname": "分组2",
+      "grouptype": "2",
+      "ordernum": 2,
+      "prompt_template": "",
+      "modelguid": "",
+      "factors": [
+        "配偶姓名",
+        "配偶身份证号码",
+        "生育时间",
+        "经办人姓名"
+      ]
+    },
+    {
+      "groupname": "分组3",
+      "grouptype": "2",
+      "ordernum": 3,
+      "prompt_template": "",
+      "modelguid": "",
+      "factors": [
+        "经办人身份证号码",
+        "联系电话",
+        "申领人签名",
+        "年月日（个人承诺）"
+      ]
+    },
+    {
+      "groupname": "分组4",
+      "grouptype": "2",
+      "ordernum": 4,
+      "prompt_template": "",
+      "modelguid": "",
+      "factors": [
+        "经办人签名",
+        "日期（企业承诺）",
+        "银行账号",
+        "户名"
+      ]
+    },
+    {
+      "groupname": "分组5",
+      "grouptype": "2",
+      "ordernum": 5,
+      "prompt_template": "",
+      "modelguid": "",
+      "factors": [
+        "开户行名称"
+      ]
+    }
+  ]
 }

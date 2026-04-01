@@ -24,7 +24,19 @@
       "Bash(xargs kill -9)",
       "Bash(pkill -f \"tauri\\\\|auto-prompt-app\")",
       "Bash(pip install openpyxl)",
-      "Bash(pip install openpyxl --break-system-packages)"
+      "Bash(pip install openpyxl --break-system-packages)",
+      "Bash(lsof:*)",
+      "Bash(kill 12616)",
+      "Bash(curl:*)",
+      "Bash(ps:*)",
+      "Bash(kill 54224)",
+      "Bash(npm run:*)",
+      "Bash(python:*)",
+      "Bash(pkill -f \"uvicorn.*pyserver.app.main:app\")",
+      "Bash(pkill -f \"run-python-server.mjs\")",
+      "Bash(python3 -m py_compile pyserver/app/main.py)",
+      "Bash(python3 skills/doc-extract-prompt-gen/generate_prompt.py \"/Users/gooddream/Desktop/projects/auto-prompt-desktop-web/.runtime-data/workspaces/1140ffc07b2d394f26dddeb071e3d7dd/aab7ec09-b94d-4d75-a7cf-0b69b8f24e34/出生证明\" \"出生证明\")",
+      "Bash(python3 -m py_compile skills/doc-extract-prompt-gen/generate_prompt.py pyserver/app/main.py)"
     ],
     "additionalDirectories": [
       "/Users/gooddream/Desktop/projects/auto-prompt-desktop/src-tauri/icons"

@@ -189,5 +189,68 @@
       "factor_trans": ""
     }
   ],
-  "promptGroups": []
+  "promptGroups": [
+    {
+      "groupname": "分组1",
+      "grouptype": "2",
+      "ordernum": 1,
+      "prompt_template": "",
+      "modelguid": "",
+      "factors": [
+        "单位名称",
+        "女职工姓名",
+        "身份证号码",
+        "联系电话"
+      ]
+    },
+    {
+      "groupname": "分组2",
+      "grouptype": "2",
+      "ordernum": 2,
+      "prompt_template": "",
+      "modelguid": "",
+      "factors": [
+        "生育（终止妊娠）时间",
+        "经办人姓名",
+        "联系电话",
+        "生育或终止妊娠情况（仅填一项）"
+      ]
+    },
+    {
+      "groupname": "分组3",
+      "grouptype": "2",
+      "ordernum": 3,
+      "prompt_template": "",
+      "modelguid": "",
+      "factors": [
+        "申领生育津贴天数",
+        "银行账号",
+        "户名",
+        "开户行名称"
+      ]
+    },
+    {
+      "groupname": "分组4",
+      "grouptype": "2",
+      "ordernum": 4,
+      "prompt_template": "",
+      "modelguid": "",
+      "factors": [
+        "申请人签名",
+        "年月日",
+        "经办人（签名）",
+        "申领单位（盖章）"
+      ]
+    },
+    {
+      "groupname": "分组5",
+      "grouptype": "2",
+      "ordernum": 5,
+      "prompt_template": "",
+      "modelguid": "",
+      "factors": [
+        "日期"
+      ]
+    }
+  ]
 }

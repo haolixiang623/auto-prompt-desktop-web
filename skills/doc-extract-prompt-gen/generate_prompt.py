@@ -185,26 +185,21 @@ def _parse_excel(excel_path, material_name=None):
     return factors
 
 def get_skill_dir():
-    """获取 skill 基础目录"""
-    # 查找 .windsurf/skills/doc-extract-prompt-gen 目录
+    """获取 skill 基础目录。
+
+    优先级：
+    1. AUTO_PROMPT_SKILLS_DIR  环境变量（容器化部署时由宿主机传入）
+    2. 脚本所在目录（开发 / 单体部署时）
+    """
+    # 1. 环境变量优先
+    env_skills = os.environ.get("AUTO_PROMPT_SKILLS_DIR")
+    if env_skills:
+        skill_dir = os.path.join(env_skills, "doc-extract-prompt-gen")
+        if os.path.exists(skill_dir):
+            return skill_dir
+
+    # 2. 脚本所在目录
     current = os.path.dirname(os.path.abspath(__file__))
-    
-    # 如果当前就在 skill 目录下
-    if 'doc-extract-prompt-gen' in current and '.windsurf' in current:
-        return current
-    
-    # 优先查找 .windsurf/skills 目录
-    home = os.path.expanduser('~')
-    windsurf_skill = os.path.join(home, 'Desktop', 'projects', 'Auto-Prompt', '.windsurf', 'skills', 'doc-extract-prompt-gen')
-    if os.path.exists(windsurf_skill):
-        return windsurf_skill
-    
-    # 备选：用户主目录下的 skill 目录
-    skill_dir = os.path.join(home, '.claude', 'skills', 'doc-extract-prompt-gen')
-    if os.path.exists(skill_dir):
-        return skill_dir
-    
-    # 如果都找不到，使用当前脚本目录
     return current
 
 def load_case_library():
@@ -315,7 +310,7 @@ def match_cases_with_qwen(client, factors, case_lib, material_name=None):
     extra = get_extra_params()
     try:
         response = client.chat.completions.create(
-            model="qwen3.5-35b-a3b",
+            model=get_text_model(),
             messages=[{"role": "user", "content": match_prompt}],
             **extra
         )
@@ -473,6 +468,21 @@ def get_images_in_dir(directory):
 
     return images
 
+def get_llm_timeout():
+    """获取 LLM 调用超时时间（秒）"""
+    try:
+        return int(os.environ.get("LLM_TIMEOUT", "120"))
+    except (ValueError, TypeError):
+        return 120
+
+def get_vl_model():
+    """获取视觉语言模型名称"""
+    return os.environ.get("MODEL_NAME", "qwen-vl-max")
+
+def get_text_model():
+    """获取纯文本模型名称（用于非图片的文本推理任务）"""
+    return os.environ.get("TEXT_MODEL_NAME", os.environ.get("MODEL_NAME", "qwen-vl-max"))
+
 def get_qwen_client():
     """获取 Qwen API 客户端"""
     try:
@@ -487,9 +497,11 @@ def get_qwen_client():
         print("请设置环境变量: export DASHSCOPE_API_KEY='your-api-key'")
         return None
     
+    timeout_val = get_llm_timeout()
     return OpenAI(
         api_key=api_key,
         base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+        timeout=float(timeout_val),
     )
 
 def analyze_image_with_qwen(client, factors, image_paths):
@@ -531,7 +543,7 @@ def analyze_image_with_qwen(client, factors, image_paths):
         extra = get_extra_params()
         try:
             response = client.chat.completions.create(
-                model="qwen-vl-max",
+                model=get_vl_model(),
                 messages=[
                     {
                         "role": "user",
@@ -645,7 +657,7 @@ def generate_smart_rules(client, factors, analysis_result):
     extra = get_extra_params()
     try:
         response = client.chat.completions.create(
-            model="qwen-vl-max",
+            model=get_vl_model(),
             messages=messages,
             **extra
         )
@@ -700,7 +712,7 @@ def validate_final_prompt(client, prompt, image_paths):
         extra = get_extra_params()
         try:
             response = client.chat.completions.create(
-                model="qwen-vl-max",
+                model=get_vl_model(),
                 messages=[
                     {
                         "role": "user",
@@ -735,7 +747,7 @@ def main():
         current_dir = os.path.abspath(sys.argv[1])
         if not os.path.isdir(current_dir):
             print(f"[错误] 指定的目录不存在: {current_dir}")
-            return
+            return 1
     else:
         current_dir = os.getcwd()
     
@@ -764,7 +776,7 @@ def main():
     
     if not factors_file:
         print(f"[错误] 未找到要素文件 (factors.csv/factors.xlsx/factors.xls)")
-        return
+        return 1
     
     template_path = os.path.join(current_dir, 'template.txt')
     output_path = os.path.join(current_dir, f"{dir_name}--要素提取完整提示词.txt")
@@ -788,14 +800,14 @@ def main():
         if not images:
             print("\n[错误] 当前目录下未发现图片附件，无法进行智能分析。")
             print("请添加至少一张图片文件（jpg/png/bmp）用于分析。")
-            return
+            return 1
         
         print(f"\n✓ 发现 {len(images)} 张图片，将逐张分析所有图片")
         
         # 3. 获取 Qwen 客户端
         client = get_qwen_client()
         if not client:
-            return
+            return 1
         
         # 4. 加载案例库并尝试匹配
         case_lib = load_case_library()
@@ -833,19 +845,19 @@ def main():
             analysis_result = analyze_image_with_qwen(client, need_ai_generation, images)
             if not analysis_result:
                 print("\n[错误] 图片分析失败，无法继续。")
-                return
+                return 1
             
             # 让 Qwen 根据识别结果生成智能提取规则
             smart_rules = generate_smart_rules(client, need_ai_generation, analysis_result)
             if not smart_rules:
                 print("\n[错误] 智能规则生成失败，无法继续。")
-                return
+                return 1
             
             # 解析智能规则
             ai_generated_factors = parse_smart_rules(smart_rules)
             if not ai_generated_factors:
                 print("\n[错误] 智能规则解析失败，无法继续。")
-                return
+                return 1
             
             # 合并AI生成的规则
             factors_with_rules.extend(ai_generated_factors)
@@ -891,11 +903,13 @@ def main():
         print("\n" + "="*60)
         print("✓ 智能提示词生成完成！")
         print("="*60)
+        return 0
             
     except Exception as e:
         print(f"\n[错误] 运行失败: {e}")
         import traceback
         traceback.print_exc()
+        return 1
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

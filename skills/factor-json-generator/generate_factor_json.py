@@ -305,7 +305,7 @@ def generate_import_json(material_name, factors_info, material_dir, group_size=4
 
 # ─────────────────────────── 入口 ────────────────────────────────
 
-def main(work_dir, group_size=4):
+def main(work_dir, group_size=4, material_filter=None):
     work_dir = os.path.abspath(work_dir)
 
     if not os.path.isdir(work_dir):
@@ -331,7 +331,16 @@ def main(work_dir, group_size=4):
         print("[错误] 未读取到任何要素信息")
         sys.exit(1)
 
-    print(f"[信息] 共读取 {len(factors_dict)} 个材料类别\n")
+    # 按用户选择过滤材料
+    if material_filter:
+        filter_set = set(material_filter)
+        factors_dict = {k: v for k, v in factors_dict.items() if k in filter_set}
+        if not factors_dict:
+            print(f"[错误] 指定的材料在 Excel 中均未找到: {material_filter}")
+            sys.exit(1)
+        print(f"[信息] 已过滤，处理 {len(factors_dict)} 个指定材料\n")
+    else:
+        print(f"[信息] 共读取 {len(factors_dict)} 个材料类别\n")
 
     results = []
     for material_name, factors_info in factors_dict.items():
@@ -383,5 +392,7 @@ if __name__ == '__main__':
     parser.add_argument('work_dir', help='材料集目录路径')
     parser.add_argument('--group-size', type=int, default=4,
                         help='单TXT文件时每个分组的最大要素数（默认4）')
+    parser.add_argument('--materials', nargs='*', default=None,
+                        help='仅处理指定的材料名称（不指定则处理全部）')
     args = parser.parse_args()
-    main(args.work_dir, args.group_size)
+    main(args.work_dir, args.group_size, args.materials)

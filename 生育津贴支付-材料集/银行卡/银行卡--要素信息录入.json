@@ -13,5 +13,16 @@
       "factor_trans": ""
     }
   ],
-  "promptGroups": []
+  "promptGroups": [
+    {
+      "groupname": "分组1",
+      "grouptype": "2",
+      "ordernum": 1,
+      "prompt_template": "",
+      "modelguid": "",
+      "factors": [
+        "卡号"
+      ]
+    }
+  ]
 }

@@ -9,7 +9,7 @@ import subprocess
 import threading
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, TYPE_CHECKING
 
 import httpx
 
@@ -25,6 +25,9 @@ from ..models.schemas import (
     VerifyResult,
 )
 
+if TYPE_CHECKING:
+    from ..core.data import DataStore
+
 # 日志记录器类型
 Logger = Callable[[str], None]
 
@@ -37,10 +40,15 @@ def emit_log(logger: Optional[Logger], message: str) -> None:
 
 class OpsService:
     """业务操作服务"""
-    
-    def __init__(self, settings_store: SettingsStore):
+
+    def __init__(self, settings_store: SettingsStore, data_store: Optional["DataStore"] = None):
         self.settings = settings_store
         self.paths = get_paths()
+        self._data_store = data_store
+
+    def set_data_store(self, data_store: "DataStore") -> None:
+        """延迟注入 DataStore"""
+        self._data_store = data_store
     
     def _resolve_skill_path(self, relative_path: str) -> Path:
         """解析 skill 脚本路径"""
@@ -394,10 +402,9 @@ class OpsService:
             else:
                 raise ValueError("响应中未找到 JSON")
     
-    def get_cases(self) -> List[Dict[str, Any]]:
-        """获取所有案例"""
+    def get_cases(self, user_id: str = "admin") -> List[Dict[str, Any]]:
+        """获取所有案例（按 user_id 隔离）"""
         cases = []
-        # 从数据目录读取案例
         cases_dir = self.paths.data_dir / "cases"
         if cases_dir.exists():
             for case_file in cases_dir.glob("*.json"):
@@ -413,30 +420,33 @@ class OpsService:
         return cases
     
     def import_cases_from_json(self, source_path: str, overwrite: bool = False) -> int:
-        """从 JSON 导入案例"""
+        """从 JSON 导入案例（写入 admin 名下）"""
         with open(source_path, "r", encoding="utf-8") as f:
             cases = json.load(f)
-        
+
         if not isinstance(cases, list):
             cases = [cases]
-        
-        # 确保 ID 存在
+
         for case in cases:
             if not case.get("id"):
                 case["id"] = str(datetime.utcnow().timestamp())
-        
-        # 保存到数据目录
+
+        if self._data_store is not None:
+            result = self._data_store.import_cases(cases, overwrite=overwrite)
+            return result["imported"]
+
         cases_dir = self.paths.data_dir / "cases"
         cases_dir.mkdir(parents=True, exist_ok=True)
-        
         target_file = cases_dir / Path(source_path).name
         with open(target_file, "w", encoding="utf-8") as f:
             json.dump(cases, f, ensure_ascii=False, indent=2)
-        
+
         return len(cases)
-    
+
     def delete_case(self, case_id: str) -> bool:
-        """删除案例"""
+        """删除案例（仅 admin 可操作）"""
+        if self._data_store is not None:
+            return self._data_store.delete_case(case_id)
         cases_dir = self.paths.data_dir / "cases"
         for case_file in cases_dir.glob("*.json"):
             try:
@@ -452,9 +462,11 @@ class OpsService:
             except Exception:
                 pass
         return False
-    
+
     def get_review_rules(self) -> List[Dict[str, Any]]:
-        """获取审查规则"""
+        """获取审查规则（全员可见）"""
+        if self._data_store is not None:
+            return self._data_store.list_review_rules()
         rules = []
         rules_dir = self.paths.data_dir / "review_rules"
         if rules_dir.exists():
@@ -469,20 +481,22 @@ class OpsService:
                 except Exception as e:
                     print(f"读取规则文件失败 {rule_file}: {e}")
         return rules
-    
+
     def update_review_rules(self, rules: List[Dict[str, Any]]) -> bool:
-        """更新审查规则"""
+        """更新审查规则（写入 admin 名下）"""
+        if self._data_store is not None:
+            return self._data_store.save_review_rules(rules)
         rules_dir = self.paths.data_dir / "review_rules"
         rules_dir.mkdir(parents=True, exist_ok=True)
-        
         target_file = rules_dir / "rules.json"
         with open(target_file, "w", encoding="utf-8") as f:
             json.dump(rules, f, ensure_ascii=False, indent=2)
-        
         return True
-    
+
     def clear_review_rules(self) -> bool:
-        """清除审查规则"""
+        """清除审查规则（仅 admin 可操作）"""
+        if self._data_store is not None:
+            return self._data_store.clear_review_rules()
         rules_dir = self.paths.data_dir / "review_rules"
         if rules_dir.exists():
             for rule_file in rules_dir.glob("*.json"):

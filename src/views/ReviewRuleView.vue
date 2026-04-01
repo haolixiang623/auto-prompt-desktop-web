@@ -430,7 +430,9 @@
 <script setup>
 import { ref, computed, onMounted, onUnmounted, onActivated, nextTick } from 'vue'
 import { apiClient } from '../services/apiClient.js'
-// Tauri listen removed
+import { parseJsonFilePayload } from '../services/jsonFile.js'
+import { listen } from '../tauri/event.js'
+import { invoke } from '../tauri/tauri.js'
 import { getScopedStorageItem, removeScopedStorageItem, setScopedStorageItem } from '../services/authState.js'
 
 // ─── Step 配置 ───────────────────────────────────
@@ -688,7 +690,7 @@ async function loadAllKeypointData(successResults) {
 async function loadMaterialKeypoints(r) {
   try {
     const raw = await invoke('read_json_file', { path: r.output })
-    const data = JSON.parse(raw)
+    const data = parseJsonFilePayload(raw)
     const kps = (data.keypoints || []).map(kp => ({ ...kp }))
     keypointData.value[r.material] = kps
     // 深拷贝用于对比
@@ -750,7 +752,7 @@ async function saveChanges(r) {
   }
   try {
     const raw = await invoke('read_json_file', { path: r.output })
-    const data = JSON.parse(raw)
+    const data = parseJsonFilePayload(raw)
     data.keypoints = keypointData.value[r.material]
     const newJson = JSON.stringify(data, null, 2)
     await invoke('write_json_file', { path: r.output, content: newJson })
@@ -774,7 +776,7 @@ async function openInFinder(path) {
 async function copyMaterialJson(r) {
   try {
     const raw = await invoke('read_json_file', { path: r.output })
-    const content = JSON.stringify(JSON.parse(raw), null, 2)
+    const content = JSON.stringify(parseJsonFilePayload(raw), null, 2)
     await navigator.clipboard.writeText(content)
     copiedItem.value = r.material
     setTimeout(() => { copiedItem.value = null }, 2000)

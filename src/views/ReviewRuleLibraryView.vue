@@ -306,6 +306,8 @@
 <script setup>
 import { ref, computed, onMounted } from 'vue'
 import { apiClient } from '../services/apiClient.js'
+import { parseJsonFilePayload } from '../services/jsonFile.js'
+import { invoke } from '../tauri/tauri.js'
 
 // ─── 数据状态 ──────────────────────────────────────
 const loading = ref(false)
@@ -555,7 +557,7 @@ async function doImport() {
   for (const filePath of importFiles.value) {
     try {
       const raw = await invoke('read_json_file', { path: filePath })
-      const data = JSON.parse(raw)
+      const data = parseJsonFilePayload(raw)
 
       // 支持单个材料对象 { materialname, keypoints } 或数组
       const items = Array.isArray(data) ? data : [data]

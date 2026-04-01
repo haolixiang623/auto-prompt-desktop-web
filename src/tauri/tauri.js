@@ -54,6 +54,14 @@ export async function invoke(command, args = {}) {
     return apiClient.get('/api/settings/default-prompts')
   }
 
+  if (command === 'get_god_prompts') {
+    return apiClient.get('/api/god-prompts')
+  }
+
+  if (command === 'save_god_prompts') {
+    return apiClient.put('/api/god-prompts', { prompts: args.prompts || {} })
+  }
+
   if (command === 'test_api_key') {
     return apiClient.post('/api/settings/test-key', { apiKey: args.apiKey })
   }

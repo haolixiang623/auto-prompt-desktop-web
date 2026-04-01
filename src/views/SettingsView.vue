@@ -57,6 +57,11 @@
                   :type="showKey ? 'text' : 'password'"
                   v-model="apiKey"
                   placeholder="请输入通义千问API密钥"
+                  autocomplete="off"
+                  autocapitalize="off"
+                  autocorrect="off"
+                  spellcheck="false"
+                  data-1p-ignore="true"
                   class="flex-1 px-4 py-2.5 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-300"
                 />
                 <button
@@ -80,6 +85,12 @@
               <p class="mt-2 text-sm text-gray-500">
                 用于调用通义千问AI生成提示词。
                 <a href="https://dashscope.aliyuncs.com" target="_blank" class="text-blue-600 hover:underline">获取API密钥</a>
+              </p>
+              <p
+                class="mt-2 text-xs"
+                :class="apiKeySaveState.tone === 'success' ? 'text-green-600' : apiKeySaveState.tone === 'warning' ? 'text-amber-600' : 'text-red-600'"
+              >
+                {{ apiKeySaveState.message }}
               </p>
               <p v-if="testStatus && testStatus.type === 'error'" class="mt-1 text-xs text-red-600">{{ testStatus.message }}</p>
             </div>
@@ -250,9 +261,14 @@
           <h2 class="text-base font-semibold text-gray-800 mb-4">当前状态</h2>
           <div class="space-y-3 text-sm">
             <div class="flex items-center gap-3">
-              <span class="w-2 h-2 rounded-full" :class="apiKey ? 'bg-green-500' : 'bg-red-500'"></span>
+              <span
+                class="w-2 h-2 rounded-full"
+                :class="apiKeySaveState.tone === 'success' ? 'bg-green-500' : apiKeySaveState.tone === 'warning' ? 'bg-amber-500' : 'bg-red-500'"
+              ></span>
               <span class="text-gray-600">API密钥:</span>
-              <span :class="apiKey ? 'text-green-600' : 'text-red-600'">{{ apiKey ? '已配置' : '未配置' }}</span>
+              <span :class="apiKeySaveState.tone === 'success' ? 'text-green-600' : apiKeySaveState.tone === 'warning' ? 'text-amber-600' : 'text-red-600'">
+                {{ apiKeySaveState.label }}
+              </span>
             </div>
             <div class="flex items-center gap-3">
               <span class="w-2 h-2 rounded-full bg-green-500"></span>
@@ -272,10 +288,13 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
+import { computed, ref, onMounted } from 'vue'
 import { invoke } from '../tauri/tauri.js'
+import { getApiKeySaveState } from './settingsState.js'
 
 const apiKey = ref('')
+const savedApiKey = ref('')
+const apiKeyConfigured = ref(false)
 const modelName = ref('qwen-vl-max')
 const models = ref([])
 const defaultModelId = ref('')
@@ -301,6 +320,11 @@ const llmTimeout = ref(120)
 const defaultGodPrompts = ref({ classify: '', extract: '' })
 const editingIdx = ref(-1)
 const editBuf = ref({ name: '', model_id: '', type: 'vl', params: [] })
+const apiKeySaveState = computed(() => getApiKeySaveState({
+  apiKey: apiKey.value,
+  savedApiKey: savedApiKey.value,
+  apiKeyConfigured: apiKeyConfigured.value
+}))
 
 function paramToEditItem(p) {
   if (typeof p.value === 'boolean') {
@@ -382,6 +406,8 @@ onMounted(async () => {
   try {
     const settings = await invoke('load_settings')
     apiKey.value = settings.api_key || ''
+    savedApiKey.value = settings.api_key || ''
+    apiKeyConfigured.value = Boolean(settings.api_key_configured)
     modelName.value = settings.model_name || 'qwen-vl-max'
     models.value = (settings.models && settings.models.length > 0)
       ? settings.models.map(m => ({ ...m, type: m.type || 'vl', params: m.params || [] }))
@@ -420,6 +446,8 @@ async function saveSettings() {
       extract_god_prompt: extractGodPrompt.value,
       llm_timeout: llmTimeout.value
     }})
+    savedApiKey.value = apiKey.value
+    apiKeyConfigured.value = Boolean(apiKey.value)
     saveStatus.value = { type: 'success', message: '✓ 已保存' }
   } catch (error) {
     saveStatus.value = { type: 'error', message: `保存失败: ${error}` }

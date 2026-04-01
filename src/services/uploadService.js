@@ -162,11 +162,7 @@ function pickFilesWithInput({ directory = false, multiple = false, filters = [] 
     document.body.appendChild(input)
 
     try {
-      if (typeof input.showPicker === 'function') {
-        input.showPicker()
-      } else {
-        input.click()
-      }
+      input.click()
     } catch (error) {
       cleanup()
       reject(error)

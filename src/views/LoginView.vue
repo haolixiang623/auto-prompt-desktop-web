@@ -48,10 +48,6 @@
         </button>
       </form>
 
-      <div class="mt-6 rounded-2xl border border-amber-400/20 bg-amber-500/10 px-4 py-3 text-xs text-amber-100 leading-6">
-        初始管理员默认账号：`admin`
-        初始管理员默认密码：`admin123456`
-      </div>
     </div>
   </div>
 </template>

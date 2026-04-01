@@ -46,7 +46,7 @@ async function request(path, { method = 'GET', body, formData, query } = {}) {
     }
     const message = typeof payload === 'string'
       ? payload
-      : payload?.error || payload?.message || response.statusText
+      : payload?.error || payload?.message || payload?.detail || response.statusText
     throw new Error(message || 'Request failed')
   }
 
