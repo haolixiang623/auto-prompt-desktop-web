@@ -195,7 +195,7 @@ function buildManifest(files) {
   }))
 }
 
-async function uploadFiles(path, files, extraFields = {}) {
+async function uploadFiles(path, files, extraFields = {}, { onProgress } = {}) {
   if (!files.length) return null
   const entries = normalizeUploadEntries(files)
 
@@ -211,16 +211,24 @@ async function uploadFiles(path, files, extraFields = {}) {
     formData.append('files', entry.file, entry.file.name)
   })
 
+  if (onProgress) {
+    return apiClient.uploadWithProgress(path, formData, onProgress)
+  }
   return apiClient.upload(path, formData)
 }
 
-export async function selectWorkspace() {
+export async function selectWorkspace({ onProgress, onPhaseChange } = {}) {
+  if (onPhaseChange) onPhaseChange('picking', 0)
   const files = await pickFiles({ directory: true })
-  if (!files.length) return null
+  if (!files.length) {
+    if (onPhaseChange) onPhaseChange('', 0)
+    return null
+  }
 
+  if (onPhaseChange) onPhaseChange('uploading', files.length)
   const result = await uploadFiles('/api/workspaces', files, {
     name: files[0]?.relativePath?.split('/')[0] || 'workspace'
-  })
+  }, { onProgress })
 
   if (result?.rootPath && result?.id) {
     workspaceRegistry.set(result.rootPath, result.id)

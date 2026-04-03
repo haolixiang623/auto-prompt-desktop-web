@@ -92,9 +92,13 @@
               <input type="text" v-model="workDir" placeholder="上传后会显示服务端工作区路径，或直接粘贴已有路径"
                 class="flex-1 px-3 py-2 border rounded-lg text-sm bg-gray-50 text-gray-700"
                 @change="onWorkDirInput" />
-              <button @click="selectWorkDirFromService" :disabled="isRunning"
-                class="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-50 transition flex-shrink-0">
-                上传文件夹...
+              <button @click="selectWorkDirFromService" :disabled="isRunning || isUploading"
+                class="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-50 transition flex-shrink-0 flex items-center gap-2">
+                <svg v-if="isUploading" class="animate-spin w-4 h-4 flex-shrink-0" fill="none" viewBox="0 0 24 24">
+                  <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
+                  <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+                </svg>
+                {{ isUploading ? (uploadPhase === 'picking' ? '选择中...' : '上传中...') : '上传文件夹...' }}
               </button>
               <div
                 class="relative flex-shrink-0"
@@ -147,6 +151,24 @@
                 </Transition>
               </div>
             </div>
+            <!-- 上传进度条 -->
+            <Transition name="structure-guide">
+              <div v-if="isUploading && uploadPhase === 'uploading'" class="mt-3 rounded-lg border border-blue-200 bg-blue-50 p-3 space-y-2">
+                <div class="flex items-center justify-between">
+                  <div class="flex items-center gap-2">
+                    <svg class="animate-spin w-4 h-4 text-blue-500 flex-shrink-0" fill="none" viewBox="0 0 24 24">
+                      <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
+                      <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+                    </svg>
+                    <span class="text-sm font-medium text-blue-700">正在上传文件夹...</span>
+                  </div>
+                  <span class="text-xs text-blue-500 tabular-nums">{{ uploadFileCount }} 个文件 · {{ uploadProgress }}%</span>
+                </div>
+                <div class="w-full bg-blue-200 rounded-full h-1.5 overflow-hidden">
+                  <div class="bg-blue-600 h-1.5 rounded-full transition-all duration-300 ease-out" :style="{ width: uploadProgress + '%' }"></div>
+                </div>
+              </div>
+            </Transition>
             <p class="text-xs text-gray-400 mt-2">
               浏览器会把所选文件夹上传到服务端工作区，后续生成、验证和下载都基于这个工作区执行
             </p>
@@ -767,6 +789,7 @@ import { useRoute } from 'vue-router'
 import { getScopedStorageItem, removeScopedStorageItem, setScopedStorageItem } from '../services/authState.js'
 import { apiClient } from '../services/apiClient.js'
 import { invoke } from '../tauri/tauri.js'
+import { selectWorkspace } from '../services/uploadService.js'
 
 const route = useRoute()
 
@@ -790,6 +813,10 @@ const maxReachableStep = computed(() => {
 
 const workDir = ref('')
 const showStructureGuide = ref(false)
+const isUploading = ref(false)
+const uploadPhase = ref('')
+const uploadProgress = ref(0)
+const uploadFileCount = ref(0)
 const factors = ref([])
 const materials = ref([])
 const selectedMaterials = ref([])  // 多选材料列表
@@ -1060,16 +1087,31 @@ async function selectWorkDirV2() {
 }
 
 async function selectWorkDirFromService() {
+  if (isUploading.value) return
+  isUploading.value = true
+  uploadPhase.value = ''
+  uploadProgress.value = 0
+  uploadFileCount.value = 0
   try {
-    const selected = await invoke('select_directory')
-    if (!selected) return
-    workDir.value = selected
+    const result = await selectWorkspace({
+      onProgress: (e) => { uploadProgress.value = e.percent },
+      onPhaseChange: (phase, fileCount) => {
+        uploadPhase.value = phase
+        if (fileCount) uploadFileCount.value = fileCount
+      }
+    })
+    if (!result?.rootPath) return
+    workDir.value = result.rootPath
     persistWorkDir()
     tagWorkspaceModule()
-    addLog(`已上传工作区: ${selected}`, 'info')
+    addLog(`已上传工作区: ${result.rootPath}`, 'info')
     await loadDirectoryData()
   } catch (error) {
     addLog(`上传工作区失败: ${error}`, 'error')
+  } finally {
+    isUploading.value = false
+    uploadPhase.value = ''
+    uploadProgress.value = 0
   }
 }
 

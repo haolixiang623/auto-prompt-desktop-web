@@ -69,6 +69,37 @@ export const apiClient = {
   upload(path, formData) {
     return request(path, { method: 'POST', formData })
   },
+  uploadWithProgress(path, formData, onProgress) {
+    return new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest()
+      const url = `${DEFAULT_BASE}${path}`
+      xhr.open('POST', url)
+      const authToken = getAuthToken()
+      if (authToken) {
+        xhr.setRequestHeader('Authorization', `Bearer ${authToken}`)
+      }
+      xhr.upload.onprogress = (e) => {
+        if (e.lengthComputable && onProgress) {
+          onProgress({ loaded: e.loaded, total: e.total, percent: Math.round((e.loaded / e.total) * 100) })
+        }
+      }
+      xhr.onload = () => {
+        if (xhr.status >= 200 && xhr.status < 300) {
+          try { resolve(JSON.parse(xhr.responseText)) }
+          catch { resolve(xhr.responseText) }
+        } else {
+          let message = xhr.statusText || 'Upload failed'
+          try {
+            const payload = JSON.parse(xhr.responseText)
+            message = payload?.error || payload?.message || payload?.detail || message
+          } catch {}
+          reject(new Error(message))
+        }
+      }
+      xhr.onerror = () => reject(new Error('Upload failed'))
+      xhr.send(formData)
+    })
+  },
   open(path, query) {
     const authToken = getAuthToken()
     const finalQuery = authToken
