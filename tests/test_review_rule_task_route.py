@@ -66,11 +66,13 @@ def test_run_review_rule_enables_llm_and_uses_payload_overrides(tmp_path, monkey
 
     assert result == []
     assert "--use-llm" in captured["cmd"]
-    assert captured["cmd"][-6:] == [
+    assert captured["cmd"][-8:] == [
         "--api-key",
         "payload-key",
         "--base-url",
         "https://example.invalid/v1",
         "--model",
         "payload-model",
+        "--timeout",
+        "120",
     ]

@@ -85,10 +85,15 @@ function createEnvironment(mockFile, tracker) {
 }
 
 test('selectWorkspace uses input-based directory picker instead of showDirectoryPicker', async () => {
-  const mockFile = {
-    name: 'factors.xlsx',
-    webkitRelativePath: 'workspace/factors.xlsx'
-  }
+  const mockFile = new File(
+    ['mock workbook'],
+    'factors.xlsx',
+    { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' },
+  )
+  Object.defineProperty(mockFile, 'webkitRelativePath', {
+    value: 'workspace/factors.xlsx',
+    configurable: true,
+  })
   const tracker = {
     showDirectoryPickerCalled: false,
     showPickerCalled: false,

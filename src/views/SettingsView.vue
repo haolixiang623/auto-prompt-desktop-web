@@ -368,8 +368,8 @@ function confirmEdit(idx) {
 }
 function addModel() {
   const newId = String(Date.now())
-  models.value.push({ id: newId, name: '新模型', model_id: '', type: 'vl', params: [] })
-  startEdit(models.value.length - 1)
+  models.value.unshift({ id: newId, name: '新模型', model_id: '', type: 'vl', params: [] })
+  startEdit(0)
 }
 function deleteModel(idx) {
   const m = models.value[idx]

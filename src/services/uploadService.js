@@ -174,16 +174,9 @@ async function pickFiles(options = {}) {
   const { directory = false } = options
 
   if (directory) {
-    try {
-      const directoryFiles = await pickDirectoryWithFsAccess()
-      if (directoryFiles) return directoryFiles
-    } catch (error) {
-      if (error?.name !== 'AbortError') {
-        console.warn('showDirectoryPicker failed, falling back to input upload', error)
-      } else {
-        return []
-      }
-    }
+    // Directory uploads are normalized through the hidden input path so
+    // browsers return File objects with stable webkitRelativePath values.
+    return pickFilesWithInput(options)
   }
 
   return pickFilesWithInput(options)
