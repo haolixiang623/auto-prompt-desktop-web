@@ -288,7 +288,7 @@
 </template>
 
 <script setup>
-import { computed, ref, onMounted } from 'vue'
+import { computed, ref, onMounted, onActivated } from 'vue'
 import { invoke } from '../tauri/tauri.js'
 import { getApiKeySaveState } from './settingsState.js'
 
@@ -402,7 +402,7 @@ const DEFAULT_MODELS = [
   { id: '5', name: 'Qwen Max (文本)', model_id: 'qwen-max', type: 'text', params: [] },
 ]
 
-onMounted(async () => {
+async function loadSettings() {
   try {
     const settings = await invoke('load_settings')
     apiKey.value = settings.api_key || ''
@@ -430,7 +430,10 @@ onMounted(async () => {
   } catch (error) {
     console.error('Failed to load default god prompts:', error)
   }
-})
+}
+
+onMounted(loadSettings)
+onActivated(loadSettings)
 
 async function saveSettings() {
   saving.value = true

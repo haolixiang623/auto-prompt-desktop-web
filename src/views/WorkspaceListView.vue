@@ -64,6 +64,15 @@
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"/>
                   </svg>
                   <span class="text-sm font-semibold text-gray-800 truncate">{{ ws.id.slice(0, 8) }}</span>
+                  <span v-if="ws.genStatus === 'generating'" class="flex items-center gap-1 px-2 py-0.5 rounded-full bg-blue-100 text-blue-600 text-xs font-medium">
+                    <svg class="w-3 h-3 animate-spin" fill="none" viewBox="0 0 24 24">
+                      <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
+                      <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"/>
+                    </svg>
+                    生成中
+                  </span>
+                  <span v-else-if="ws.genStatus === 'done'" class="px-2 py-0.5 rounded-full bg-green-100 text-green-700 text-xs font-medium">已完成</span>
+                  <span v-else-if="ws.genStatus === 'error'" class="px-2 py-0.5 rounded-full bg-red-100 text-red-600 text-xs font-medium">生成失败</span>
                   <span class="text-xs text-gray-400">{{ formatDate(ws.createdAt) }}</span>
                 </div>
                 <div class="flex items-center gap-3 text-xs text-gray-500 mb-2">
@@ -125,7 +134,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, onActivated, onUnmounted } from 'vue'
 import { apiClient } from '../services/apiClient.js'
 
 const props = defineProps({
@@ -164,6 +173,13 @@ async function loadList() {
   } finally {
     loading.value = false
   }
+  // 有生成中的任务时启动轮询，否则停止
+  const hasGenerating = workspaces.value.some(ws => ws.genStatus === 'generating')
+  if (hasGenerating && !pollTimer) {
+    pollTimer = setInterval(loadList, 3000)
+  } else if (!hasGenerating && pollTimer) {
+    stopPolling()
+  }
 }
 
 async function handleDelete(ws) {
@@ -177,7 +193,20 @@ async function handleDelete(ws) {
   }
 }
 
+let pollTimer = null
+
+function stopPolling() {
+  if (pollTimer) {
+    clearInterval(pollTimer)
+    pollTimer = null
+  }
+}
+
 onMounted(loadList)
+
+onActivated(loadList)
+
+onUnmounted(stopPolling)
 
 defineExpose({ loadList })
 </script>

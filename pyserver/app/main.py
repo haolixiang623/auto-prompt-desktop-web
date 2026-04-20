@@ -237,6 +237,14 @@ class WorkspaceService:
             # 统计顶级子目录（即材料文件夹）
             materials = [d.name for d in sorted(entry.iterdir()) if d.is_dir() and not d.name.startswith(".") and not d.name.startswith("__")]
             total_files = sum(1 for _ in entry.rglob("*") if _.is_file())
+            # 读取生成状态
+            status_file = entry / ".gen_status"
+            gen_status = ""
+            if status_file.exists():
+                try:
+                    gen_status = status_file.read_text().strip()
+                except Exception:
+                    pass
             result.append({
                 "id": ws_id,
                 "rootPath": str(entry),
@@ -245,6 +253,7 @@ class WorkspaceService:
                 "materials": materials,
                 "materialCount": len(materials),
                 "fileCount": total_files,
+                "genStatus": gen_status,
             })
         return result
 
@@ -1123,6 +1132,20 @@ async def workspace_factors(request: Request, workDir: str = Query(...), user: A
     paths = request.app.state.paths
     real_dir = _resolve_user_work_dir(paths, workDir, user.id)
     return {"data": read_factors_script(paths, real_dir)}
+
+
+@app.put("/api/workspaces/gen-status")
+async def update_gen_status(payload: dict[str, Any], request: Request, user: Any = Depends(current_user)):
+    work_dir = payload.get("workDir", "")
+    status = payload.get("status", "")  # "generating" | "done" | "error" | ""
+    paths = request.app.state.paths
+    real_work_dir = Path(_resolve_user_work_dir(paths, work_dir, user.id))
+    status_file = real_work_dir / ".gen_status"
+    if status:
+        status_file.write_text(status)
+    elif status_file.exists():
+        status_file.unlink()
+    return {"ok": True}
 
 
 @app.get("/api/workspaces/{workspace_id}")
