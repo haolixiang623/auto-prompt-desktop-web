@@ -1,21 +1,21 @@
 <template>
   <!-- 整体：左右双栏，左侧固定 sidebar，右侧滚动内容 -->
-  <div class="flex h-full min-h-0">
+  <div class="flex h-full min-h-0 flex-col xl:flex-row">
 
     <!-- ═══ 左侧固定 Step 导航 ═══ -->
-    <div class="w-56 flex-shrink-0 bg-white border-r flex flex-col">
+    <div class="w-full flex-shrink-0 bg-white border-b flex flex-col xl:w-56 xl:border-b-0 xl:border-r">
       <!-- 标题 -->
-      <div class="px-5 pt-6 pb-4 border-b">
+      <div class="border-b px-4 pb-4 pt-5 sm:px-5 sm:pt-6">
         <h1 class="text-base font-bold text-gray-900 leading-tight">生成提取提示词</h1>
         <p class="text-xs text-gray-400 mt-1 leading-relaxed">智能生成文档要素提取提示词</p>
       </div>
 
       <!-- Step 列表 -->
-      <nav class="flex-1 py-4 px-3 space-y-1">
+      <nav class="flex gap-2 overflow-x-auto px-3 py-3 xl:flex-1 xl:flex-col xl:gap-1 xl:overflow-visible xl:px-3 xl:py-4">
         <button v-for="(s, i) in steps" :key="i"
           @click="handleStepNav(i + 1)"
           :disabled="i + 1 > maxReachableStep"
-          class="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-left transition-all group"
+          class="group flex min-w-[160px] flex-shrink-0 items-center gap-2 rounded-lg px-3 py-2 text-left transition-all xl:w-full xl:min-w-0 xl:gap-3 xl:px-3 xl:py-2.5"
           :class="[
             currentStep === i + 1
               ? 'bg-blue-50 text-blue-700'
@@ -26,7 +26,7 @@
                   : 'text-gray-300 cursor-not-allowed'
           ]">
           <!-- 步骤圆圈 -->
-          <div class="w-7 h-7 rounded-full flex items-center justify-center flex-shrink-0 text-xs font-bold transition-all"
+          <div class="flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-full text-[11px] font-bold transition-all xl:h-7 xl:w-7 xl:text-xs"
             :class="[
               currentStep > i + 1
                 ? 'bg-green-500 text-white'
@@ -42,22 +42,23 @@
             <span v-else>{{ i + 1 }}</span>
           </div>
           <!-- 步骤文字 -->
-          <div class="flex-1 min-w-0">
+          <div class="min-w-0 flex-1">
             <div class="text-xs font-semibold truncate">{{ s.title }}</div>
-            <div class="text-xs truncate mt-0.5"
+            <div class="mt-0.5 hidden truncate text-xs xl:block"
               :class="currentStep === i + 1 ? 'text-blue-500' : currentStep > i + 1 ? 'text-green-500' : 'text-gray-400'">
               {{ currentStep > i + 1 ? s.done : currentStep === i + 1 ? s.active : s.pending }}
             </div>
           </div>
           <!-- 当前步骤指示线 -->
-          <div v-if="currentStep === i + 1" class="w-1 h-5 rounded-full bg-blue-500 flex-shrink-0"></div>
+          <div v-if="currentStep === i + 1" class="hidden h-5 w-1 flex-shrink-0 rounded-full bg-blue-500 xl:block"></div>
         </button>
       </nav>
 
       <!-- 底部操作 -->
-      <div class="px-3 pb-4 pt-2 border-t space-y-2">
+      <div class="border-t px-3 pb-4">
+        <div class="flex flex-col gap-3 pt-2 sm:flex-row sm:items-center sm:justify-between xl:flex-col xl:items-stretch xl:justify-start">
         <!-- 运行状态 -->
-        <div v-if="isRunning || isVerifying" class="flex items-center gap-2 px-3 py-2 bg-blue-50 rounded-lg">
+        <div v-if="isRunning || isVerifying" class="flex items-center gap-2 rounded-lg bg-blue-50 px-3 py-2 sm:flex-1 xl:flex-none">
           <svg class="animate-spin w-3.5 h-3.5 text-blue-500 flex-shrink-0" fill="none" viewBox="0 0 24 24">
             <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
             <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"/>
@@ -65,18 +66,19 @@
           <span class="text-xs text-blue-600">{{ isRunning ? `生成中... ${batchElapsed}s` : `验证中... ${verifyElapsed}s` }}</span>
         </div>
         <button @click="clear" :disabled="isRunning || isVerifying"
-          class="w-full flex items-center justify-center gap-1.5 px-3 py-2 text-xs text-gray-500 border border-gray-200 rounded-lg hover:bg-gray-50 hover:text-gray-700 disabled:opacity-40 transition">
+          class="flex w-full items-center justify-center gap-1.5 rounded-lg border border-gray-200 px-3 py-2 text-xs text-gray-500 transition hover:bg-gray-50 hover:text-gray-700 disabled:opacity-40 sm:w-auto sm:min-w-36 xl:w-full">
           <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
           </svg>
           重新开始
         </button>
+        </div>
       </div>
     </div>
 
     <!-- ═══ 右侧滚动内容区 ═══ -->
     <div class="flex-1 overflow-y-auto bg-gray-50">
-      <div class="p-6 max-w-3xl">
+      <div class="w-full max-w-5xl p-4 sm:p-6">
 
         <!-- ── STEP 1 内容：上传工作区与材料 ── -->
         <div v-if="currentStep === 1" class="space-y-4">
@@ -88,12 +90,12 @@
           <!-- 工作区选择 -->
           <div class="bg-white rounded-xl border p-4">
             <label class="block text-xs font-semibold text-gray-600 mb-2 uppercase tracking-wide">工作区</label>
-            <div class="flex gap-2 items-start">
+            <div class="flex flex-col gap-2 sm:flex-row sm:items-start">
               <input type="text" v-model="workDir" placeholder="上传后会显示服务端工作区路径，或直接粘贴已有路径"
-                class="flex-1 px-3 py-2 border rounded-lg text-sm bg-gray-50 text-gray-700"
+                class="w-full flex-1 px-3 py-2 border rounded-lg text-sm bg-gray-50 text-gray-700"
                 @change="onWorkDirInput" />
               <button @click="selectWorkDirFromService" :disabled="isRunning || isUploading"
-                class="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-50 transition flex-shrink-0 flex items-center gap-2">
+                class="flex w-full flex-shrink-0 items-center justify-center gap-2 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-blue-700 disabled:opacity-50 sm:w-auto">
                 <svg v-if="isUploading" class="animate-spin w-4 h-4 flex-shrink-0" fill="none" viewBox="0 0 24 24">
                   <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
                   <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
@@ -101,7 +103,7 @@
                 {{ isUploading ? (uploadPhase === 'picking' ? '选择中...' : '上传中...') : '上传文件夹...' }}
               </button>
               <div
-                class="relative flex-shrink-0"
+                class="relative flex-shrink-0 self-end sm:self-auto"
                 @mouseenter="showStructureGuide = true"
                 @mouseleave="showStructureGuide = false"
               >
@@ -196,26 +198,31 @@
           </div>
 
           <!-- 要素 + 材料 双列 -->
-          <div v-if="factors.length > 0 || materials.length > 0" class="grid grid-cols-2 gap-4">
+          <div v-if="factors.length > 0 || materials.length > 0" class="grid grid-cols-1 gap-4 lg:grid-cols-2">
             <!-- 要素字段 -->
             <div class="bg-white rounded-xl border overflow-hidden">
-              <div class="flex items-center justify-between px-4 py-3 border-b bg-gray-50">
-                <span class="text-sm font-semibold text-gray-700">所有要素字段</span>
-                <span class="px-2 py-0.5 bg-blue-100 text-blue-700 rounded-full text-xs font-medium">{{ factors.length }} 个</span>
+              <div class="flex flex-col gap-2 px-4 py-3 border-b bg-gray-50 sm:flex-row sm:items-center sm:justify-between">
+                <span class="text-sm font-semibold text-gray-700">识别要素字段</span>
+                <span class="px-2 py-0.5 bg-blue-100 text-blue-700 rounded-full text-xs font-medium">{{ selectedFactors.length }} 个</span>
               </div>
-              <div class="divide-y max-h-52 overflow-y-auto">
-                <div v-for="(f, i) in factors.slice(0, 10)" :key="i" class="flex items-center gap-2.5 px-4 py-2">
-                  <span class="w-5 h-5 rounded-full bg-blue-50 text-blue-600 text-xs flex items-center justify-center font-medium flex-shrink-0">{{ i+1 }}</span>
-                  <span class="text-sm text-gray-700 truncate">{{ f.field_name }}</span>
+              <div class="max-h-72 overflow-y-auto p-3">
+                <div class="grid grid-cols-1 gap-2 xl:grid-cols-2">
+                  <div
+                    v-for="(f, i) in selectedFactors"
+                    :key="`${f.field_name}-${i}`"
+                    class="flex items-start gap-2.5 rounded-lg border border-slate-100 bg-slate-50 px-3 py-2.5"
+                  >
+                    <span class="mt-0.5 flex h-5 w-5 flex-shrink-0 items-center justify-center rounded-full bg-blue-50 text-xs font-medium text-blue-600">{{ i + 1 }}</span>
+                    <span class="min-w-0 text-sm leading-5 text-gray-700 whitespace-normal break-words">{{ f.field_name }}</span>
+                  </div>
                 </div>
-                <div v-if="factors.length > 10" class="px-4 py-2 text-xs text-gray-400 text-center">还有 {{ factors.length - 10 }} 个字段...</div>
               </div>
             </div>
             <!-- 材料类型多选 -->
             <div class="bg-white rounded-xl border overflow-hidden">
-              <div class="flex items-center justify-between px-4 py-3 border-b bg-gray-50">
+              <div class="flex flex-col gap-2 px-4 py-3 border-b bg-gray-50 sm:flex-row sm:items-center sm:justify-between">
                 <span class="text-sm font-semibold text-gray-700">材料类型（多选）</span>
-                <div class="flex items-center gap-2">
+                <div class="flex items-center gap-2 self-start sm:self-auto">
                   <span class="px-2 py-0.5 bg-purple-100 text-purple-700 rounded-full text-xs font-medium">已选 {{ selectedMaterials.length }}/{{ materials.length }}</span>
                   <button @click="toggleAllMaterials"
                     class="text-xs text-blue-600 hover:text-blue-800 font-medium">
@@ -223,7 +230,7 @@
                   </button>
                 </div>
               </div>
-              <div class="divide-y max-h-52 overflow-y-auto">
+              <div class="divide-y max-h-72 overflow-y-auto">
                 <div v-for="m in materials" :key="m.name"
                   @click="toggleMaterial(m)"
                   class="flex items-center gap-3 px-4 py-3 cursor-pointer transition select-none"
@@ -235,8 +242,13 @@
                     </svg>
                   </div>
                   <div class="flex-1 min-w-0">
-                    <div class="text-sm truncate" :class="isMaterialSelected(m) ? 'font-semibold text-blue-800' : 'text-gray-700'">{{ m.name }}</div>
-                    <div class="text-xs text-gray-400">{{ m.image_count }} 个样本文件</div>
+                    <div
+                      class="text-sm leading-5 whitespace-normal break-words"
+                      :class="isMaterialSelected(m) ? 'font-semibold text-blue-800' : 'text-gray-700'"
+                    >
+                      {{ m.name }}
+                    </div>
+                    <div class="mt-1 text-xs text-gray-400">{{ m.image_count }} 个样本文件</div>
                   </div>
                 </div>
               </div>
@@ -264,17 +276,17 @@
           </div>
 
           <!-- 操作按钮 -->
-          <div class="flex items-center justify-between pt-2">
+          <div class="flex flex-col gap-3 pt-2 sm:flex-row sm:items-center sm:justify-between">
             <div class="text-sm text-gray-500">
               <span v-if="!workDir">请先上传工作区</span>
               <span v-else-if="selectedMaterials.length === 0">请勾选至少一种材料类型</span>
               <span v-else class="text-green-600 flex items-center gap-1">
                 <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd"/></svg>
-                已选 {{ selectedMaterials.length }} 种材料，共 {{ factors.length }} 个要素字段
+                已选 {{ selectedMaterials.length }} 种材料，共 {{ selectedFactors.length }} 个要素字段
               </span>
             </div>
             <button @click="goStep2" :disabled="!canGenerate || isRunning"
-              class="flex items-center gap-2 px-6 py-2.5 rounded-lg text-sm font-semibold transition-all"
+              class="flex w-full items-center justify-center gap-2 rounded-lg px-6 py-2.5 text-sm font-semibold transition-all sm:w-auto"
               :class="canGenerate && !isRunning ? 'bg-blue-600 text-white hover:bg-blue-700 shadow-sm' : 'bg-gray-100 text-gray-400 cursor-not-allowed'">
               <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/>
@@ -878,10 +890,19 @@ const fjDownloadingAll = ref(false)
 const fjGroupSize = ref(4)
 
 // 计算属性
+const selectedMaterialNames = computed(() => new Set(
+  selectedMaterials.value.map(material => material.name)
+))
+const selectedFactors = computed(() => {
+  if (selectedMaterialNames.value.size === 0) {
+    return []
+  }
+  return factors.value.filter((factor) => !factor.material || selectedMaterialNames.value.has(factor.material))
+})
 const canGenerate = computed(() => Boolean(
   workDir.value &&
   selectedMaterials.value.length > 0 &&
-  factors.value.length > 0
+  selectedFactors.value.length > 0
 ))
 const batchDoneCount = computed(() => Object.keys(batchResults.value).length)
 const verifyDoneCount = computed(() => Object.values(verifyResults.value).filter(v => v?.success).length)
