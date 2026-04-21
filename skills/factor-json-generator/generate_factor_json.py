@@ -240,6 +240,20 @@ def build_prompt_groups_by_size(factor_names, prompt_dict, group_size, txt_path)
 
 # ─────────────────────────── 主体生成 ────────────────────────────
 
+def deduplicate_factors(factors_info, prompt_dict):
+    deduped_factors = []
+    seen_keys = set()
+
+    for factor_name, factor_usage, factor_type in factors_info:
+        factor_prompt = prompt_dict.get(factor_name, "")
+        dedupe_key = (factor_name, factor_prompt)
+        if dedupe_key in seen_keys:
+            continue
+        seen_keys.add(dedupe_key)
+        deduped_factors.append((factor_name, factor_usage, factor_type))
+
+    return deduped_factors
+
 def generate_import_json(material_name, factors_info, material_dir, group_size=4):
     """为单个材料生成符合导入规范的 JSON 对象。
 
@@ -279,9 +293,19 @@ def generate_import_json(material_name, factors_info, material_dir, group_size=4
         print(f"  [警告] 未找到提示词文件，按每组 {group_size} 个要素自动分组（prompt_template 留空）")
         groups = build_prompt_groups_by_size(factor_names, {}, group_size, None)
 
+    deduped_factors_info = deduplicate_factors(factors_info, prompt_dict)
+    deduped_factor_names = [f[0] for f in deduped_factors_info]
+
+    for group in groups:
+        group_seen = set()
+        group["factors"] = [
+            factor_name for factor_name in group["factors"]
+            if factor_name in deduped_factor_names and not (factor_name in group_seen or group_seen.add(factor_name))
+        ]
+
     # ── 构建 factors 数组 ──
     factors_list = []
-    for idx, (factor_name, factor_usage, factor_type) in enumerate(factors_info, 1):
+    for idx, (factor_name, factor_usage, factor_type) in enumerate(deduped_factors_info, 1):
         factors_list.append({
             "factorname":    factor_name,
             "factortype":    factor_type or "1",
