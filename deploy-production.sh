@@ -1,7 +1,7 @@
 #!/bin/bash
 # 生产环境部署脚本 - Auto Prompt
 # 唯一受支持的部署入口：Dockerfile + docker-compose.prod.yml
-# 目标服务器: 192.168.204.126
+# 目标服务器: 180.76.244.18
 # 使用方法: ./deploy-production.sh
 
 set -e
@@ -14,9 +14,10 @@ BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
 # 服务器配置
-PROD_SERVER="192.168.204.126"
+PROD_SERVER="${PROD_SERVER:-180.76.244.18}"
 PROD_USER="root"
 PROD_PORT="22"
+PROD_PASS="${PROD_PASS:-Lxhao1230.0}"
 APP_NAME="auto-prompt"
 DEPLOY_PATH="/opt/$APP_NAME"
 
@@ -27,13 +28,13 @@ echo -e "${GREEN}==========================================${NC}"
 echo ""
 
 # 检查本地环境
-echo -e "${YELLOW}[1/8] 检查本地环境...${NC}"
+echo -e "${YELLOW}[1/9] 检查本地环境...${NC}"
 
 # 检查 SSH 连接
 echo "检查SSH连接..."
 if command -v sshpass &> /dev/null; then
     # 使用sshpass进行密码认证
-    if sshpass -p 'Zwfw1b@2022' ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=no $PROD_USER@$PROD_SERVER "echo 'SSH连接成功'" 2>/dev/null; then
+    if sshpass -p "$PROD_PASS" ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=no $PROD_USER@$PROD_SERVER "echo 'SSH连接成功'" 2>/dev/null; then
         SSH_METHOD="sshpass"
         echo -e "${GREEN}✓ SSH密码认证连接成功${NC}"
     else
@@ -67,13 +68,20 @@ if [ ! -f "Dockerfile" ]; then
     exit 1
 fi
 
+if [ ! -f ".runtime-data/settings.json" ]; then
+    echo -e "${RED}错误: 找不到 .runtime-data/settings.json，无法导出默认模型配置和 API Key${NC}"
+    exit 1
+fi
+
+echo "导出默认模型配置和 API Key..."
+node ./scripts/export-default-config.mjs
 echo -e "${GREEN}✓ 本地环境检查通过${NC}"
 
 # 准备生产服务器环境
-echo -e "${YELLOW}[2/8] 准备生产服务器环境...${NC}"
+echo -e "${YELLOW}[2/9] 准备生产服务器环境...${NC}"
 
 if [ "$SSH_METHOD" = "sshpass" ]; then
-    sshpass -p 'Zwfw1b@2022' ssh $PROD_USER@$PROD_SERVER << 'EOF'
+    sshpass -p "$PROD_PASS" ssh $PROD_USER@$PROD_SERVER << 'EOF'
 set -e
 
 # 检查 Docker 是否安装
@@ -147,7 +155,7 @@ fi
 echo -e "${GREEN}✓ 生产服务器环境准备完成${NC}"
 
 # 同步代码到生产服务器
-echo -e "${YELLOW}[3/8] 同步代码到生产服务器...${NC}"
+echo -e "${YELLOW}[3/9] 同步代码到生产服务器...${NC}"
 
 # 创建临时目录打包
 TEMP_DIR="/tmp/auto-prompt-deploy-$(date +%s)"
@@ -160,6 +168,9 @@ cp -r skills $TEMP_DIR/
 cp package.json package-lock.json $TEMP_DIR/
 cp index.html vite.config.js postcss.config.js tailwind.config.js $TEMP_DIR/
 cp Dockerfile docker-compose.prod.yml nginx.conf $TEMP_DIR/
+cp auto-prompt.project.json $TEMP_DIR/
+cp .deploy/default.env $TEMP_DIR/.env
+cp .runtime-data/settings.json $TEMP_DIR/default-settings.json
 cp -r 材料集 $TEMP_DIR/ 2>/dev/null || true
 cp -r 分类材料集 $TEMP_DIR/ 2>/dev/null || true
 cp -r 生育津贴支付-材料集 $TEMP_DIR/ 2>/dev/null || true
@@ -170,15 +181,23 @@ tar -czf /tmp/auto-prompt-deploy.tar.gz .
 cd - >/dev/null
 
 # 传输到生产服务器
-scp /tmp/auto-prompt-deploy.tar.gz $PROD_USER@$PROD_SERVER:/tmp/
-
-# 在生产服务器解压
-ssh $PROD_USER@$PROD_SERVER << EOF
+if [ "$SSH_METHOD" = "sshpass" ]; then
+    sshpass -p "$PROD_PASS" scp /tmp/auto-prompt-deploy.tar.gz $PROD_USER@$PROD_SERVER:/tmp/
+    sshpass -p "$PROD_PASS" ssh $PROD_USER@$PROD_SERVER << EOF
 cd /opt/auto-prompt
 tar -xzf /tmp/auto-prompt-deploy.tar.gz -C .
 rm /tmp/auto-prompt-deploy.tar.gz
 chown -R root:root /opt/auto-prompt
 EOF
+else
+    scp /tmp/auto-prompt-deploy.tar.gz $PROD_USER@$PROD_SERVER:/tmp/
+    ssh $PROD_USER@$PROD_SERVER << EOF
+cd /opt/auto-prompt
+tar -xzf /tmp/auto-prompt-deploy.tar.gz -C .
+rm /tmp/auto-prompt-deploy.tar.gz
+chown -R root:root /opt/auto-prompt
+EOF
+fi
 
 # 清理临时文件
 rm -rf $TEMP_DIR /tmp/auto-prompt-deploy.tar.gz
@@ -186,27 +205,51 @@ rm -rf $TEMP_DIR /tmp/auto-prompt-deploy.tar.gz
 echo -e "${GREEN}✓ 代码同步完成${NC}"
 
 # 停止旧服务
-echo -e "${YELLOW}[4/8] 停止旧服务...${NC}"
-ssh $PROD_USER@$PROD_SERVER "cd /opt/auto-prompt && docker-compose -f docker-compose.prod.yml down 2>/dev/null || true"
+echo -e "${YELLOW}[4/9] 停止旧服务...${NC}"
+if [ "$SSH_METHOD" = "sshpass" ]; then
+    sshpass -p "$PROD_PASS" ssh $PROD_USER@$PROD_SERVER "cd /opt/auto-prompt && docker compose -f docker-compose.prod.yml down 2>/dev/null || true"
+else
+    ssh $PROD_USER@$PROD_SERVER "cd /opt/auto-prompt && docker compose -f docker-compose.prod.yml down 2>/dev/null || true"
+fi
 echo -e "${GREEN}✓ 旧服务已停止${NC}"
 
 # 构建并启动新服务
-echo -e "${YELLOW}[5/8] 构建并启动新服务...${NC}"
-ssh $PROD_USER@$PROD_SERVER << EOF
+echo -e "${YELLOW}[5/9] 构建并启动新服务...${NC}"
+if [ "$SSH_METHOD" = "sshpass" ]; then
+    sshpass -p "$PROD_PASS" ssh $PROD_USER@$PROD_SERVER << EOF
 cd /opt/auto-prompt
-docker-compose -f docker-compose.prod.yml up -d --build
+docker compose -f docker-compose.prod.yml up -d --build
 EOF
+else
+    ssh $PROD_USER@$PROD_SERVER << EOF
+cd /opt/auto-prompt
+docker compose -f docker-compose.prod.yml up -d --build
+EOF
+fi
 
 echo -e "${GREEN}✓ 服务构建完成${NC}"
 
+# 同步默认运行时设置（确保每次部署都带上本地模型和 Key 配置）
+echo -e "${YELLOW}[6/9] 同步默认运行时配置...${NC}"
+if [ "$SSH_METHOD" = "sshpass" ]; then
+    sshpass -p "$PROD_PASS" ssh $PROD_USER@$PROD_SERVER "docker cp /opt/auto-prompt/default-settings.json auto-prompt-py:/data/settings.json"
+else
+    ssh $PROD_USER@$PROD_SERVER "docker cp /opt/auto-prompt/default-settings.json auto-prompt-py:/data/settings.json"
+fi
+echo -e "${GREEN}✓ 运行时配置同步完成${NC}"
+
 # 等待服务启动
-echo -e "${YELLOW}[6/8] 等待服务启动...${NC}"
+echo -e "${YELLOW}[7/9] 等待服务启动...${NC}"
 sleep 15
 
 # 检查服务状态
-echo -e "${YELLOW}[7/8] 检查服务状态...${NC}"
+echo -e "${YELLOW}[8/9] 检查服务状态...${NC}"
 
-SERVICE_STATUS=$(ssh $PROD_USER@$PROD_SERVER "cd /opt/auto-prompt && docker-compose -f docker-compose.prod.yml ps")
+if [ "$SSH_METHOD" = "sshpass" ]; then
+    SERVICE_STATUS=$(sshpass -p "$PROD_PASS" ssh $PROD_USER@$PROD_SERVER "cd /opt/auto-prompt && docker compose -f docker-compose.prod.yml ps")
+else
+    SERVICE_STATUS=$(ssh $PROD_USER@$PROD_SERVER "cd /opt/auto-prompt && docker compose -f docker-compose.prod.yml ps")
+fi
 
 if echo "$SERVICE_STATUS" | grep -q "Up"; then
     echo -e "${GREEN}✓ 服务运行正常${NC}"
@@ -216,12 +259,16 @@ else
     echo "$SERVICE_STATUS"
     echo ""
     echo "查看日志:"
-    ssh $PROD_USER@$PROD_SERVER "cd /opt/auto-prompt && docker-compose -f docker-compose.prod.yml logs"
+    if [ "$SSH_METHOD" = "sshpass" ]; then
+        sshpass -p "$PROD_PASS" ssh $PROD_USER@$PROD_SERVER "cd /opt/auto-prompt && docker compose -f docker-compose.prod.yml logs"
+    else
+        ssh $PROD_USER@$PROD_SERVER "cd /opt/auto-prompt && docker compose -f docker-compose.prod.yml logs"
+    fi
     exit 1
 fi
 
 # 健康检查
-echo -e "${YELLOW}[8/8] 执行健康检查...${NC}"
+echo -e "${YELLOW}[9/9] 执行健康检查...${NC}"
 if curl -f -s --max-time 10 http://$PROD_SERVER:8089/api/health >/dev/null 2>&1; then
     echo -e "${GREEN}✓ 健康检查通过${NC}"
 else

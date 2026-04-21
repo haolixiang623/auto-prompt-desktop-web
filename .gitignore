@@ -26,6 +26,7 @@ dist-ssr
 # Legacy generated artifacts
 server/target
 .runtime-data/
+.deploy/
 
 # Python
 __pycache__/

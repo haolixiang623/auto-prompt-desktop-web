@@ -8,10 +8,21 @@
 - `deploy-production.sh`
 
 ## 服务器信息
-- **IP地址**: 192.168.204.126
+- **IP地址**: 180.76.244.18
 - **用户名**: root
-- **密码**: Zwfw1b@2022
 - **端口**: 8089
+- **建议**: 不在文档中保存明文密码，使用环境变量 `PROD_PASS` 或 SSH 密钥认证
+
+## 默认配置自动同步（模型 + API Key）
+
+每次部署会自动携带本地默认配置，无需手动在云端重复配置：
+
+- 本地配置源：`.runtime-data/settings.json`
+- 部署前自动导出脚本：`node ./scripts/export-default-config.mjs`
+- 导出结果：
+  - `auto-prompt.project.json`（默认模型列表、默认模型ID、提示词配置）
+  - `.deploy/default.env`（`DASHSCOPE_API_KEY` / `OPENAI_API_KEY`）
+- 部署脚本会把本地配置同步到生产容器 `/data/settings.json`，确保线上默认配置与本地一致
 
 ## 部署前准备
 
@@ -24,8 +35,9 @@ brew install hudochenkov/sshpass/sshpass  # macOS
 # 或
 sudo apt-get install sshpass  # Ubuntu
 
-# 测试连接
-sshpass -p 'Zwfw1b@2022' ssh -o StrictHostKeyChecking=no root@192.168.204.126 'echo SSH连接成功'
+# 测试连接（推荐使用环境变量传密码）
+export PROD_PASS='your_password'
+sshpass -p "$PROD_PASS" ssh -o StrictHostKeyChecking=no root@180.76.244.18 'echo SSH连接成功'
 ```
 
 #### 方法二：配置SSH密钥（推荐）
@@ -34,10 +46,10 @@ sshpass -p 'Zwfw1b@2022' ssh -o StrictHostKeyChecking=no root@192.168.204.126 'e
 ssh-keygen -t rsa -b 4096 -C "deployment"
 
 # 复制公钥到服务器
-ssh-copy-id -i ~/.ssh/id_rsa.pub root@192.168.204.126
+ssh-copy-id -i ~/.ssh/id_rsa.pub root@180.76.244.18
 
 # 测试连接
-ssh root@192.168.204.126 'echo SSH连接成功'
+ssh root@180.76.244.18 'echo SSH连接成功'
 ```
 
 ### 2. 本地环境检查
@@ -54,7 +66,7 @@ ssh root@192.168.204.126 'echo SSH连接成功'
 ./deploy-production.sh
 
 # 或使用密码认证
-sshpass -p 'Zwfw1b@2022' ./deploy-production.sh
+PROD_PASS='your_password' ./deploy-production.sh
 ```
 
 ### 2. 手动部署（可选）
@@ -62,7 +74,7 @@ sshpass -p 'Zwfw1b@2022' ./deploy-production.sh
 
 #### 步骤1：准备服务器环境
 ```bash
-ssh root@192.168.204.126
+ssh root@180.76.244.18
 
 # 在服务器上执行
 # 安装Docker
@@ -90,12 +102,12 @@ firewall-cmd --reload
 rsync -avz --exclude='.git' --exclude='node_modules' \
   src/ pyserver/ skills/ package*.json index.html vite.config.js \
   Dockerfile docker-compose.prod.yml nginx.conf \
-  root@192.168.204.126:/opt/auto-prompt/
+  root@180.76.244.18:/opt/auto-prompt/
 ```
 
 #### 步骤3：启动服务
 ```bash
-ssh root@192.168.204.126
+ssh root@180.76.244.18
 
 # 在服务器上执行
 cd /opt/auto-prompt
@@ -106,7 +118,7 @@ docker-compose -f docker-compose.prod.yml up -d --build
 
 ### 1. 检查服务状态
 ```bash
-ssh root@192.168.204.126
+ssh root@180.76.244.18
 
 # 在服务器上执行
 cd /opt/auto-prompt
@@ -115,7 +127,7 @@ docker-compose -f docker-compose.prod.yml ps
 
 ### 2. 查看日志
 ```bash
-ssh root@192.168.204.126
+ssh root@180.76.244.18
 
 # 在服务器上执行
 cd /opt/auto-prompt
@@ -125,12 +137,12 @@ docker-compose -f docker-compose.prod.yml logs -f
 ### 3. 健康检查
 ```bash
 # 在本地执行
-curl http://192.168.204.126:8089/api/health
+curl http://180.76.244.18:8089/api/health
 ```
 
 ### 4. 访问应用
-- **应用地址**: http://192.168.204.126:8089
-- **API文档**: http://192.168.204.126:8089/docs
+- **应用地址**: http://180.76.244.18:8089
+- **API文档**: http://180.76.244.18:8089/docs
 
 ## 默认账户
 - **用户名**: admin
@@ -212,7 +224,7 @@ docker run --rm -v app-data:/data -v $(pwd):/backup alpine tar czf /backup/data-
 ./deploy-production.sh
 
 # 方法2：手动更新
-ssh root@192.168.204.126
+ssh root@180.76.244.18
 cd /opt/auto-prompt
 docker-compose -f docker-compose.prod.yml up -d --build
 ```
@@ -222,7 +234,7 @@ docker-compose -f docker-compose.prod.yml up -d --build
 如果新版本有问题，可以回滚到之前版本：
 
 ```bash
-ssh root@192.168.204.126
+ssh root@180.76.244.18
 cd /opt/auto-prompt
 
 # 查看之前的镜像版本
