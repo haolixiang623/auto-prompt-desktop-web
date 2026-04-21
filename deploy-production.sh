@@ -1,5 +1,6 @@
 #!/bin/bash
 # 生产环境部署脚本 - Auto Prompt
+# 唯一受支持的部署入口：Dockerfile + docker-compose.prod.yml
 # 目标服务器: 192.168.204.126
 # 使用方法: ./deploy-production.sh
 

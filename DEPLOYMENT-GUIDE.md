@@ -1,5 +1,12 @@
 # Auto Prompt 生产环境部署指南
 
+本仓库只保留一条受支持的部署路径：
+
+- `Dockerfile`
+- `docker-compose.prod.yml`
+- `nginx.conf`
+- `deploy-production.sh`
+
 ## 服务器信息
 - **IP地址**: 192.168.204.126
 - **用户名**: root
@@ -51,7 +58,7 @@ sshpass -p 'Zwfw1b@2022' ./deploy-production.sh
 ```
 
 ### 2. 手动部署（可选）
-如果自动部署失败，可以按以下步骤手动部署：
+如果自动部署失败，可以按以下步骤手动部署同一套生产 Docker 方案：
 
 #### 步骤1：准备服务器环境
 ```bash
@@ -150,7 +157,6 @@ docker-compose -f docker-compose.prod.yml restart
 docker-compose -f docker-compose.prod.yml down
 
 # 更新代码后重新部署
-git pull  # 如果使用git管理
 docker-compose -f docker-compose.prod.yml up -d --build
 ```
 
@@ -208,7 +214,6 @@ docker run --rm -v app-data:/data -v $(pwd):/backup alpine tar czf /backup/data-
 # 方法2：手动更新
 ssh root@192.168.204.126
 cd /opt/auto-prompt
-git pull  # 如果使用git
 docker-compose -f docker-compose.prod.yml up -d --build
 ```
 

@@ -1,6 +1,7 @@
 #!/bin/bash
 # 部署前测试脚本
 # 使用方法: ./test-deploy.sh
+# 仅验证唯一受支持的生产 Docker 部署路径
 
 set -e
 

@@ -60,19 +60,24 @@ npm run build
 npm run start
 ```
 
-## Docker
+## Production Docker
 
-Build:
+The repository supports one Docker deployment path for production:
+`Dockerfile` + `docker-compose.prod.yml`.
 
-```bash
-docker build -t auto-prompt-web .
-```
-
-Run:
+Start the full production stack locally:
 
 ```bash
-docker run --rm -p 3000:3000 -v "$(pwd)/.runtime-data:/data" auto-prompt-web
+npm run docker:up
 ```
+
+Stop it:
+
+```bash
+npm run docker:down
+```
+
+The stack exposes the application at `http://127.0.0.1:8089`.
 
 Quick container verification:
 
@@ -84,3 +89,4 @@ npm run docker:verify
 
 - The active server runtime is Python.
 - Build and start commands now target the Python backend.
+- Deprecated deployment scripts and alternate compose files have been removed in favor of the single production Docker path.
