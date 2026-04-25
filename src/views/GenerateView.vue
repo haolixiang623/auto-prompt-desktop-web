@@ -294,6 +294,13 @@
               开始生成提示词
             </button>
           </div>
+
+          <div v-if="factorValidationErrors.length > 0" class="rounded-xl border border-red-200 bg-red-50 p-3">
+            <p class="text-sm font-semibold text-red-700 mb-1">factors 格式校验未通过</p>
+            <ul class="text-xs text-red-600 space-y-1 list-disc pl-4">
+              <li v-for="(err, i) in factorValidationErrors" :key="`factor-err-${i}`">{{ err }}</li>
+            </ul>
+          </div>
         </div>
 
         <!-- ── STEP 2 内容：生成提示词 ── -->
@@ -859,6 +866,7 @@ const logs = ref([])
 const logContainer = ref(null)
 const promptTextarea = ref(null)
 const copied = ref(false)
+const factorValidationErrors = ref([])
 
 // Step2: 批量生成状态
 const batchResults = ref({})        // { materialName: { success, prompt_template, output_file, error, elapsed } }
@@ -1201,6 +1209,7 @@ async function loadDirectoryData() {
   factors.value = []
   materials.value = []
   selectedMaterials.value = []
+  factorValidationErrors.value = []
   batchResults.value = {}
   verifyResults.value = {}
   editablePrompt.value = ''
@@ -1223,6 +1232,28 @@ async function loadDirectoryData() {
 
 async function goStep2() {
   if (!canGenerate.value || isRunning.value) return
+  factorValidationErrors.value = []
+  try {
+    const validationResult = await apiClient.post('/api/generate/validate-factors', {
+      workDir: workDir.value,
+      materials: selectedMaterials.value.map(item => item.name)
+    })
+    const validation = validationResult?.data || {}
+    if (!validation.ok) {
+      factorValidationErrors.value = Array.isArray(validation.errors) ? validation.errors : ['factors 格式校验失败，请检查文件内容。']
+      addLog('factors 格式校验未通过，已阻止生成。', 'error')
+      factorValidationErrors.value.forEach((msg) => addLog(`校验失败: ${msg}`, 'error'))
+      return
+    }
+    const warnings = Array.isArray(validation.warnings) ? validation.warnings : []
+    warnings.forEach((msg) => addLog(`校验提示: ${msg}`, 'warning'))
+  } catch (error) {
+    const errMsg = `factors 格式校验请求失败: ${error}`
+    factorValidationErrors.value = [errMsg]
+    addLog(errMsg, 'error')
+    return
+  }
+
   currentStep.value = 2
   isRunning.value = true
   batchResults.value = {}
@@ -1302,6 +1333,42 @@ async function runVerify() {
   if (isVerifying.value || !activeVerifyPrompt.value) return
   const matName = activeVerifyMaterial.value
   if (!matName) return
+  if (verifyWorkDir.value) {
+    try {
+      const verifyMaterialsRes = await apiClient.get('/api/workspaces/materials', { workDir: verifyWorkDir.value })
+      const verifyMaterials = Array.isArray(verifyMaterialsRes?.data) ? verifyMaterialsRes.data : []
+      const matched = verifyMaterials.find((item) => item?.name === matName)
+      if (!matched || !matched.image_count) {
+        const availableNames = verifyMaterials.map((item) => item?.name).filter(Boolean)
+        const hint = availableNames.length > 0
+          ? `当前验证目录包含：${availableNames.join('、')}`
+          : '当前验证目录下未识别到任何材料子文件夹（需包含图片或PDF）'
+        addLog(`[验证前校验失败] 验证目录缺少材料「${matName}」对应子文件夹或无可用图片/PDF。${hint}`, 'error')
+        verifyResults.value = {
+          ...verifyResults.value,
+          [matName]: {
+            success: false,
+            image_file: '',
+            extraction_output: '',
+            error: `验证目录结构不符合要求：缺少「${matName}」子文件夹，或子文件夹中没有图片/PDF。${hint}`
+          }
+        }
+        return
+      }
+    } catch (e) {
+      addLog(`[验证前校验异常] 无法读取验证目录材料结构: ${e}`, 'error')
+      verifyResults.value = {
+        ...verifyResults.value,
+        [matName]: {
+          success: false,
+          image_file: '',
+          extraction_output: '',
+          error: `无法读取验证目录，请确认路径有效并可访问：${e}`
+        }
+      }
+      return
+    }
+  }
   isVerifying.value = true
   verifyElapsed.value = 0
   const verifyStart = Date.now()
@@ -1490,6 +1557,7 @@ async function clear() {
   fjPreviewItem.value = null
   fjCopiedItem.value = null
   fjDownloadingAll.value = false
+  factorValidationErrors.value = []
   await loadModels()
 }
 </script>

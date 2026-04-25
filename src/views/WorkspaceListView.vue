@@ -112,6 +112,13 @@
                   </svg>
                   打开
                 </button>
+                <button v-if="showDownload" @click.stop="$emit('download', ws)"
+                  class="flex items-center gap-1 px-3 py-1.5 text-xs text-green-600 bg-green-50 rounded-lg hover:bg-green-100 transition font-medium">
+                  <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 3v12m0 0l4-4m-4 4l-4-4m-5 8h18"/>
+                  </svg>
+                  {{ downloadLabel }}
+                </button>
                 <button @click.stop="handleDelete(ws)"
                   class="flex items-center gap-1 px-3 py-1.5 text-xs text-red-500 bg-red-50 rounded-lg hover:bg-red-100 transition font-medium">
                   <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -146,9 +153,11 @@ const props = defineProps({
   iconBgClass: { type: String, default: 'bg-blue-100' },
   iconClass: { type: String, default: 'text-blue-600' },
   module: { type: String, default: '' },
+  showDownload: { type: Boolean, default: false },
+  downloadLabel: { type: String, default: '下载ZIP' },
 })
 
-const emit = defineEmits(['open'])
+const emit = defineEmits(['open', 'download'])
 
 const loading = ref(false)
 const workspaces = ref([])

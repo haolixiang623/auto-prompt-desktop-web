@@ -3,6 +3,7 @@ import sys
 import json
 import base64
 import shutil
+import re
 from pathlib import Path
 from datetime import datetime
 
@@ -318,6 +319,56 @@ def extract_json(text):
     return text.strip()
 
 
+def _extract_first_json_value(text):
+    """尽力从文本中提取第一个可解析 JSON（对象或数组）"""
+    if not text:
+        return None
+    decoder = json.JSONDecoder()
+    for i, ch in enumerate(text):
+        if ch not in '{[':
+            continue
+        try:
+            value, _ = decoder.raw_decode(text[i:])
+            return value
+        except Exception:
+            continue
+    return None
+
+
+def _normalize_step2_payload(data):
+    """兼容不同返回格式，统一提取 classification_plan/summary"""
+    if isinstance(data, list):
+        return data, {}
+
+    if not isinstance(data, dict):
+        return None, None
+
+    # 常见字段兼容：classification_plan / classificationPlan / plan
+    plan = (
+        data.get('classification_plan')
+        or data.get('classificationPlan')
+        or data.get('plan')
+        or data.get('attachments_plan')
+        or []
+    )
+    summary = data.get('summary') or {}
+
+    # 某些模型会把 plan 作为字符串 JSON 返回
+    if isinstance(plan, str):
+        try:
+            maybe = json.loads(plan)
+            if isinstance(maybe, list):
+                plan = maybe
+        except Exception:
+            pass
+
+    if not isinstance(plan, list):
+        return None, None
+    if not isinstance(summary, dict):
+        summary = {}
+    return plan, summary
+
+
 # ─────────────────────────────────────────────
 # 步骤1：分类信息提取
 # ─────────────────────────────────────────────
@@ -439,13 +490,25 @@ def parse_step2_result(raw_text):
     """解析步骤2 JSON 返回"""
     try:
         json_str = extract_json(raw_text)
-        data = json.loads(json_str)
-        plan = data.get('classification_plan', [])
-        summary = data.get('summary', {})
+        data = None
+        try:
+            data = json.loads(json_str)
+        except Exception:
+            # 模型输出夹带说明文字时，尝试从整段文本抽取第一个 JSON 值
+            data = _extract_first_json_value(raw_text)
+
+        plan, summary = _normalize_step2_payload(data)
+        if plan is None:
+            raise ValueError("missing classification_plan")
+
         print(f"[步骤2] 成功解析，共 {len(plan)} 条归集方案")
         return plan, summary
     except Exception as e:
         print(f"[警告] 步骤2 结果解析失败: {e}")
+        if raw_text:
+            text = str(raw_text)
+            # 记录截断内容，便于排查模型格式漂移
+            print(f"[步骤2] 原始输出片段: {text[:400]}")
         return None, None
 
 
@@ -701,16 +764,21 @@ def main():
     print(f"[配置] 最大优化轮次: {max_iterations}")
 
     # ── 1. 校验目录结构
-    unclassified_dir = os.path.join(base_dir, '待分类材料')
-    if not os.path.isdir(unclassified_dir):
-        print(f"[错误] 待分类材料目录不存在: {unclassified_dir}")
-        return
+    unclassified_dir = None
+    for name in ['待分类材料', '待分类']:
+        candidate = os.path.join(base_dir, name)
+        if os.path.isdir(candidate):
+            unclassified_dir = candidate
+            break
+    if not unclassified_dir:
+        print(f"[错误] 待分类材料目录不存在: {base_dir}/待分类材料 或 {base_dir}/待分类")
+        return 1
 
     # ── 2. 读取材料名称
     factors_path = find_factors_file(base_dir)
     if not factors_path:
         print(f"[错误] 未找到 factors.csv/xlsx 文件: {base_dir}")
-        return
+        return 1
     material_names = read_material_names(factors_path)
     print(f"\n✓ 材料类别（{len(material_names)} 种）: {', '.join(material_names)}")
 
@@ -737,7 +805,7 @@ def main():
     # ── 6. 获取 Qwen 客户端
     client = get_qwen_client()
     if not client:
-        return
+        return 1
 
     # ── 7. 迭代优化循环
     step1_raw = None
@@ -763,7 +831,7 @@ def main():
         step1_raw = run_step1_extraction(client, image_files, extract_template, material_names)
         if not step1_raw:
             print("[错误] 步骤1执行失败，终止")
-            break
+            return 1
 
         step1_attachments = parse_step1_result(step1_raw)
         s1_pass, s1_issues = evaluate_step1(
@@ -781,7 +849,7 @@ def main():
         )
         if not step2_raw:
             print("[错误] 步骤2执行失败，终止")
-            break
+            return 1
 
         step2_plan, step2_summary = parse_step2_result(step2_raw)
         s2_pass, s2_issues = evaluate_step2(
@@ -826,6 +894,11 @@ def main():
             extract_was_optimized = True
             aggregate_was_optimized = True
 
+    # 无论是否触发优化，都将本次实际使用的提示词落盘到工作区，
+    # 便于下载结果包和后续追溯。
+    final_extract_path = save_template(extract_tmpl_path, extract_template, use_timestamp=False)
+    final_aggregate_path = save_template(aggregate_tmpl_path, aggregate_template, use_timestamp=False)
+
     # ── 8. 输出最终优化后的提示词
     print(f"\n{'='*60}")
     print("最终优化提示词")
@@ -845,6 +918,7 @@ def main():
         execute_classification(step2_plan, unclassified_dir, classified_root, material_names)
     else:
         print("\n[警告] 步骤2未生成有效归集方案，跳过文件归集")
+        return 1
 
     # ── 10. 保存运行报告
     def _prompt_source(was_optimized, iters):
@@ -876,6 +950,7 @@ def main():
     print(f"  - 已分类材料目录:     {classified_root}")
     print(f"  - 运行报告:           {report_path}")
     print("=" * 60)
+    return 0
 
 
 def test_prompt(work_dir, prompt_type, prompt_content):
@@ -971,10 +1046,12 @@ if __name__ == "__main__":
     if parsed.test_prompt:
         if not parsed.args or not parsed.prompt_file:
             print(json.dumps({"error": "--test-prompt 需要 work_dir 和 --prompt-file"}, ensure_ascii=False))
+            raise SystemExit(2)
         else:
             work_dir = parsed.args[0]
             with open(parsed.prompt_file, 'r', encoding='utf-8') as f:
                 prompt_content = f.read()
             test_prompt(work_dir, parsed.test_prompt, prompt_content)
+            raise SystemExit(0)
     else:
-        main()
+        raise SystemExit(main())

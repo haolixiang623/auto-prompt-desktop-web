@@ -191,23 +191,39 @@ function buildManifest(files) {
 async function uploadFiles(path, files, extraFields = {}, { onProgress } = {}) {
   if (!files.length) return null
   const entries = normalizeUploadEntries(files)
-
-  const formData = new FormData()
-  Object.entries(extraFields).forEach(([key, value]) => {
-    if (value !== undefined && value !== null) {
-      formData.append(key, value)
-    }
-  })
-
-  formData.append('manifest', JSON.stringify(buildManifest(entries)))
-  entries.forEach((entry) => {
-    formData.append('files', entry.file, entry.file.name)
-  })
+  const buildFormData = () => {
+    const formData = new FormData()
+    Object.entries(extraFields).forEach(([key, value]) => {
+      if (value !== undefined && value !== null) {
+        formData.append(key, value)
+      }
+    })
+    formData.append('manifest', JSON.stringify(buildManifest(entries)))
+    entries.forEach((entry) => {
+      formData.append('files', entry.file, entry.file.name)
+    })
+    return formData
+  }
 
   if (onProgress) {
-    return apiClient.uploadWithProgress(path, formData, onProgress)
+    try {
+      return await apiClient.uploadWithProgress(path, buildFormData(), onProgress)
+    } catch (error) {
+      // 部分环境下 XHR 上传会触发 onerror（表现为 "Upload failed"），
+      // 降级到 fetch 再重试一次，避免用户重复选择目录。
+      const message = String(error || '')
+      if (message.includes('Upload failed') || message.includes('Upload timeout')) {
+        try {
+          return await apiClient.upload(path, buildFormData())
+        } catch (fallbackError) {
+          const fallbackMessage = String(fallbackError || '')
+          throw new Error(`${message}; fallback fetch failed: ${fallbackMessage}`)
+        }
+      }
+      throw error
+    }
   }
-  return apiClient.upload(path, formData)
+  return apiClient.upload(path, buildFormData())
 }
 
 export async function selectWorkspace({ onProgress, onPhaseChange } = {}) {

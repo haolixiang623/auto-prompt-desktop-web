@@ -92,11 +92,27 @@
             <p class="text-xs text-gray-400 mt-2">工作区需包含：factors.xlsx、待分类材料/ 子目录、已分类材料/ 子目录</p>
           </div>
 
-          <!-- 事项名称 + 待分类文件 双列预览 -->
+          <div class="rounded-xl border border-blue-200 bg-blue-50 p-4">
+            <p class="text-sm font-semibold text-blue-700 mb-1">分类目录格式提醒</p>
+            <ul class="text-xs text-blue-700 list-disc pl-4 space-y-1">
+              <li>根目录需包含：`factors.xlsx`（或 `factors.xls` / `factors.csv`）。</li>
+              <li>根目录需包含：`已分类材料/`（按材料名称建立子目录）。</li>
+              <li>根目录需包含：`待分类材料/`（兼容 `待分类/`），且目录下需有图片或 PDF 文件。</li>
+            </ul>
+          </div>
+
+          <div v-if="classifyValidationErrors.length > 0" class="rounded-xl border border-red-200 bg-red-50 p-3">
+            <p class="text-sm font-semibold text-red-700 mb-1">分类前格式校验未通过</p>
+            <ul class="text-xs text-red-600 space-y-1 list-disc pl-4">
+              <li v-for="(err, i) in classifyValidationErrors" :key="`classify-err-${i}`">{{ err }}</li>
+            </ul>
+          </div>
+
+          <!-- 材料名称 + 待分类文件 双列预览 -->
           <div v-if="workDir" class="grid grid-cols-2 gap-4">
             <div class="bg-white rounded-xl border overflow-hidden">
               <div class="flex items-center justify-between px-4 py-3 bg-blue-50 border-b">
-                <span class="text-sm font-semibold text-blue-800">事项名称</span>
+                <span class="text-sm font-semibold text-blue-800">材料名称</span>
                 <span class="px-2 py-0.5 bg-blue-600 text-white rounded-full text-xs font-medium">{{ categories.length }} 类</span>
               </div>
               <div class="divide-y max-h-52 overflow-y-auto">
@@ -104,7 +120,7 @@
                   <span class="w-5 h-5 bg-blue-100 text-blue-700 rounded-full text-xs flex items-center justify-center font-medium flex-shrink-0">{{ idx+1 }}</span>
                   <span class="text-sm text-gray-700 truncate">{{ cat }}</span>
                 </div>
-                <div v-if="categories.length === 0" class="px-4 py-4 text-sm text-gray-400 text-center">未找到事项名称</div>
+                <div v-if="categories.length === 0" class="px-4 py-4 text-sm text-gray-400 text-center">未找到材料名称</div>
               </div>
             </div>
             <div class="bg-white rounded-xl border overflow-hidden">
@@ -164,7 +180,7 @@
           <div class="flex items-center justify-between pt-2">
             <div class="text-sm text-gray-500">
               <span v-if="!workDir">请先选择工作目录</span>
-              <span v-else-if="!canClassify">目录数据未就绪（需要事项名称和待分类文件）</span>
+              <span v-else-if="!canClassify">目录数据未就绪（需要材料名称和待分类文件）</span>
               <span v-else class="text-green-600 flex items-center gap-1">
                 <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd"/></svg>
                 {{ pendingFiles.length }} 个文件 · {{ categories.length }} 个类别 · 最多 {{ maxRounds }} 轮
@@ -539,6 +555,13 @@
               </svg>
               结果不对，重新分类
             </button>
+            <button @click="downloadResultZip" :disabled="!workDir"
+              class="flex items-center gap-1.5 px-4 py-2 border border-blue-300 text-blue-600 rounded-lg text-sm hover:bg-blue-50 disabled:opacity-40 transition">
+              <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 3v12m0 0l4-4m-4 4l-4-4m-5 8h18"/>
+              </svg>
+              下载分类结果
+            </button>
             <button @click="confirmAndGoStep4" :disabled="isTesting"
               class="flex items-center gap-2 px-6 py-2.5 bg-green-600 text-white rounded-lg text-sm font-semibold hover:bg-green-700 disabled:opacity-40 transition shadow-sm">
               <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -572,6 +595,16 @@
               </div>
               <div class="text-sm font-semibold text-gray-800 mb-1">查看已分类目录</div>
               <div class="text-xs text-gray-400">在 Finder 中打开归集结果</div>
+            </button>
+            <button @click="downloadResultZip"
+              class="bg-white rounded-xl border p-5 text-left hover:border-green-300 hover:bg-green-50 transition group">
+              <div class="w-9 h-9 bg-gray-100 rounded-lg flex items-center justify-center mb-3 group-hover:bg-green-100 transition">
+                <svg class="w-5 h-5 text-gray-500 group-hover:text-green-600 transition" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 3v12m0 0l4-4m-4 4l-4-4m-5 8h18"/>
+                </svg>
+              </div>
+              <div class="text-sm font-semibold text-gray-800 mb-1">下载分类结果 ZIP</div>
+              <div class="text-xs text-gray-400">打包已分类材料并下载到本地</div>
             </button>
             <button @click="clear"
               class="bg-white rounded-xl border p-5 text-left hover:border-gray-300 hover:bg-gray-50 transition group">
@@ -614,6 +647,7 @@
 
 <script setup>
 import { ref, computed, onMounted, onUnmounted, onActivated, nextTick } from 'vue'
+import { useRoute } from 'vue-router'
 import { apiClient } from '../services/apiClient.js'
 import { listen } from '../tauri/event.js'
 import { invoke } from '../tauri/tauri.js'
@@ -653,12 +687,15 @@ const activeReviewTab = ref('detail')
 const testResult = ref(null)
 const isTesting = ref(false)
 const testingType = ref('')
+const classifyValidationErrors = ref([])
 
 const reviewTabs = computed(() => [
   { id: 'detail', label: '分类明细', badge: result.value?.step1_result?.length || null },
   { id: 'prompt', label: '提示词', badge: null },
   { id: 'test', label: '测试结果', badge: testResult.value ? '1' : null },
 ])
+
+const route = useRoute()
 
 let unlistenLog = null
 
@@ -678,7 +715,19 @@ async function loadModels() {
   } catch (e) { console.error(e) }
 }
 
-onActivated(() => { loadModels() })
+onActivated(async () => {
+  await loadModels()
+  const queryWorkDir = route.query.workDir
+  if (queryWorkDir && queryWorkDir !== workDir.value) {
+    workDir.value = queryWorkDir
+    persistWorkDir()
+    tagWorkspaceModule()
+    addLog(`已打开工作区: ${queryWorkDir}`, 'info')
+    await loadDirInfo()
+  } else if (!queryWorkDir && !isRunning.value && workDir.value) {
+    clear()
+  }
+})
 
 onMounted(async () => {
   await loadModels()
@@ -693,10 +742,18 @@ onMounted(async () => {
     nextTick(() => { if (logContainer.value) logContainer.value.scrollTop = logContainer.value.scrollHeight })
   })
 
-  if (!workDir.value && typeof window !== 'undefined') {
+  const queryWorkDir = route.query.workDir
+  if (queryWorkDir) {
+    workDir.value = queryWorkDir
+    persistWorkDir()
+    tagWorkspaceModule()
+    addLog(`已打开工作区: ${queryWorkDir}`, 'info')
+    await loadDirInfo()
+  } else if (!workDir.value && typeof window !== 'undefined') {
     const storedWorkDir = getScopedStorageItem(WORKDIR_STORAGE_KEY)
     if (storedWorkDir) {
       workDir.value = storedWorkDir
+      tagWorkspaceModule()
       addLog(`已恢复上次工作区: ${storedWorkDir}`, 'info')
       await loadDirInfo()
     }
@@ -725,6 +782,15 @@ function persistWorkDir() {
   }
 }
 
+function tagWorkspaceModule() {
+  if (!workDir.value) return
+  const parts = workDir.value.replace(/\\/g, '/').split('/').filter(Boolean)
+  const wsId = parts[parts.length - 1]
+  if (wsId) {
+    apiClient.put(`/api/workspaces/${encodeURIComponent(wsId)}/module`, { module: 'classify' }).catch(() => {})
+  }
+}
+
 function formatSize(bytes) {
   if (bytes < 1024) return `${bytes}B`
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)}KB`
@@ -747,6 +813,7 @@ async function selectWorkDir() {
     if (!selected) return
     workDir.value = selected
     persistWorkDir()
+    tagWorkspaceModule()
     addLog(`已上传工作区: ${selected}`, 'info')
     await loadDirInfo()
   } catch (e) {
@@ -755,12 +822,13 @@ async function selectWorkDir() {
 }
 
 async function loadDirInfo() {
+  classifyValidationErrors.value = []
   try {
     const cats = await invoke('get_material_categories', { workDir: workDir.value })
     categories.value = cats
-    addLog(`发现 ${cats.length} 个事项名称`, 'success')
+    addLog(`发现 ${cats.length} 个材料名称`, 'success')
   } catch (e) {
-    addLog(`扫描事项名称失败: ${e}`, 'error')
+    addLog(`扫描材料名称失败: ${e}`, 'error')
     categories.value = []
   }
   try {
@@ -775,6 +843,28 @@ async function loadDirInfo() {
 
 async function goStep2() {
   if (!canClassify.value || isRunning.value) return
+  classifyValidationErrors.value = []
+  try {
+    const validationRes = await apiClient.post('/api/classify/validate-workdir', { workDir: workDir.value })
+    const validation = validationRes?.data || {}
+    if (!validation.ok) {
+      const errors = Array.isArray(validation.errors) && validation.errors.length > 0
+        ? validation.errors
+        : ['分类目录格式不符合要求，请检查工作区结构。']
+      classifyValidationErrors.value = errors
+      addLog('分类前格式校验未通过，已阻止分类。', 'error')
+      errors.forEach((msg) => addLog(`校验失败: ${msg}`, 'error'))
+      return
+    }
+    const warnings = Array.isArray(validation.warnings) ? validation.warnings : []
+    warnings.forEach((msg) => addLog(`校验提示: ${msg}`, 'warning'))
+  } catch (e) {
+    const errMsg = `分类前格式校验请求失败: ${e}`
+    classifyValidationErrors.value = [errMsg]
+    addLog(errMsg, 'error')
+    return
+  }
+
   currentStep.value = 2
   isRunning.value = true
   result.value = null
@@ -879,6 +969,16 @@ async function openResult() {
   }
 }
 
+async function downloadResultZip() {
+  if (!workDir.value) return
+  try {
+    apiClient.open('/api/classify/download-result', { workDir: workDir.value })
+    addLog('开始下载分类结果 ZIP。', 'success')
+  } catch (e) {
+    addLog(`下载分类结果失败: ${e}`, 'error')
+  }
+}
+
 function clear() {
   currentStep.value = 1
   workDir.value = ''
@@ -892,6 +992,7 @@ function clear() {
   promptSaved.value = false
   testResult.value = null
   activeReviewTab.value = 'detail'
+  classifyValidationErrors.value = []
   if (availableModels.value.length > 0) selectedModelId.value = availableModels.value[0].id
 }
 </script>

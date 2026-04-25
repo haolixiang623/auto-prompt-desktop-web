@@ -74,6 +74,7 @@ export const apiClient = {
       const xhr = new XMLHttpRequest()
       const url = `${DEFAULT_BASE}${path}`
       xhr.open('POST', url)
+      xhr.timeout = 120000
       const authToken = getAuthToken()
       if (authToken) {
         xhr.setRequestHeader('Authorization', `Bearer ${authToken}`)
@@ -96,7 +97,15 @@ export const apiClient = {
           reject(new Error(message))
         }
       }
-      xhr.onerror = () => reject(new Error('Upload failed'))
+      xhr.onerror = () => {
+        reject(new Error(`Upload failed (network/xhr): status=${xhr.status}, readyState=${xhr.readyState}, url=${url}`))
+      }
+      xhr.ontimeout = () => {
+        reject(new Error(`Upload timeout after ${xhr.timeout}ms: url=${url}`))
+      }
+      xhr.onabort = () => {
+        reject(new Error(`Upload aborted: url=${url}`))
+      }
       xhr.send(formData)
     })
   },

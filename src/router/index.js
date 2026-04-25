@@ -29,6 +29,12 @@ const routes = [
   },
   {
     path: '/classify',
+    name: 'ClassifyList',
+    component: () => import('../views/ClassifyListView.vue'),
+    meta: { requiresAuth: true }
+  },
+  {
+    path: '/classify/new',
     name: 'Classify',
     component: () => import('../views/ClassifyView.vue'),
     meta: { requiresAuth: true }

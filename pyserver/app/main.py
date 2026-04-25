@@ -706,6 +706,85 @@ def run_generate_prompt(paths: Any, settings: dict[str, Any], work_dir: str, mat
     }
 
 
+def validate_factors_for_generate(paths: Any, work_dir: str, selected_materials: Optional[list[str]] = None) -> dict[str, Any]:
+    errors: list[str] = []
+    warnings: list[str] = []
+    selected_materials = selected_materials or []
+    root = Path(work_dir)
+
+    factors_path: Optional[Path] = None
+    for name in ("factors.xlsx", "factors.xls", "factors.csv"):
+        candidate = root / name
+        if candidate.exists():
+            factors_path = candidate
+            break
+
+    if factors_path is None:
+        return {"ok": False, "errors": ["未找到 factors 文件（支持 factors.xlsx / factors.xls / factors.csv）"], "warnings": [], "stats": {}}
+
+    try:
+        factors = read_factors_script(paths, work_dir)
+    except Exception as exc:
+        return {"ok": False, "errors": [f"factors 文件格式解析失败：{exc}"], "warnings": [], "stats": {"factors_file": str(factors_path)}}
+
+    if not factors:
+        errors.append("factors 文件未解析出任何要素，请检查表头或内容是否为空。")
+        return {"ok": False, "errors": errors, "warnings": warnings, "stats": {"factors_file": str(factors_path), "factor_count": 0}}
+
+    # 1) 基础字段完整性校验
+    for index, factor in enumerate(factors, start=1):
+        if not str(factor.get("field_name", "")).strip():
+            errors.append(f"第 {index} 行要素名称为空。")
+
+    # 2) 重复要素名校验（按材料维度）
+    duplicate_keys: dict[tuple[str, str], int] = {}
+    for factor in factors:
+        material = str(factor.get("material", "")).strip() or "__GLOBAL__"
+        field_name = str(factor.get("field_name", "")).strip()
+        if not field_name:
+            continue
+        key = (material, field_name)
+        duplicate_keys[key] = duplicate_keys.get(key, 0) + 1
+
+    duplicates = [(material, name, count) for (material, name), count in duplicate_keys.items() if count > 1]
+    for material, name, count in duplicates:
+        if material == "__GLOBAL__":
+            errors.append(f"要素「{name}」在 factors 中重复出现 {count} 次（未区分材料）。")
+        else:
+            errors.append(
+                f"材料「{material}」下要素「{name}」重复出现 {count} 次。"
+                "建议在 Excel 中去重，仅保留唯一“材料名称 + 要素名称”组合。"
+            )
+
+    # 3) 选中材料覆盖校验
+    if selected_materials:
+        has_material_tag = any(str(item.get("material", "")).strip() for item in factors)
+        if has_material_tag:
+            by_material: dict[str, int] = {}
+            for item in factors:
+                mat = str(item.get("material", "")).strip()
+                if not mat:
+                    continue
+                by_material[mat] = by_material.get(mat, 0) + 1
+
+            for material_name in selected_materials:
+                if by_material.get(material_name, 0) == 0:
+                    errors.append(f"选中材料「{material_name}」在 factors 中没有对应要素行，请检查“材料名称”列是否一致。")
+        else:
+            warnings.append("factors 未解析到“材料名称”，将对所有选中材料复用同一套要素。")
+
+    return {
+        "ok": len(errors) == 0,
+        "errors": errors,
+        "warnings": warnings,
+        "stats": {
+            "factors_file": str(factors_path),
+            "factor_count": len(factors),
+            "selected_material_count": len(selected_materials),
+        },
+    }
+
+
 def _resolve_user_id_from_work_dir(paths: Any, work_dir: str) -> str:
     """
     从已解析的绝对路径 work_dir 中提取 user_id。
@@ -745,6 +824,9 @@ def run_lines(command: list[str], env: dict[str, str], cwd: Optional[str], log_c
 
 def run_classify(paths: Any, settings: dict[str, Any], work_dir: str, max_rounds: int, log_cb: Optional[Any] = None) -> dict[str, Any]:
     script = paths.skills_dir / "material-classifier" / "classify_materials.py"
+    report_path = Path(work_dir) / "classification_report.json"
+    if report_path.exists():
+        report_path.unlink()
     env = {
         **os.environ,
         "DASHSCOPE_API_KEY": settings["api_key"],
@@ -752,8 +834,79 @@ def run_classify(paths: Any, settings: dict[str, Any], work_dir: str, max_rounds
         "CLASSIFY_GOD_PROMPT": settings["god_prompt"],
     }
     run_lines([sys.executable, str(script), work_dir, str(max_rounds)], env, work_dir, log_cb)
-    report_path = Path(work_dir) / "classification_report.json"
+    if not report_path.exists():
+        raise ValueError("classification report not generated")
     return load_json(report_path, {})
+
+
+def validate_classify_workspace(paths: Any, work_dir: str) -> dict[str, Any]:
+    root = Path(work_dir)
+    errors: list[str] = []
+    warnings: list[str] = []
+
+    if not root.exists() or not root.is_dir():
+        return {
+            "ok": False,
+            "errors": [f"工作区不存在或不可访问: {work_dir}"],
+            "warnings": [],
+            "meta": {},
+        }
+
+    factors_file = None
+    for name in ("factors.xlsx", "factors.xls", "factors.csv"):
+        candidate = root / name
+        if candidate.exists() and candidate.is_file():
+            factors_file = candidate
+            break
+    if factors_file is None:
+        errors.append("缺少 factors 文件（支持 factors.xlsx / factors.xls / factors.csv）。")
+
+    classified_dir = root / "已分类材料"
+    if not classified_dir.exists() or not classified_dir.is_dir():
+        warnings.append("未检测到“已分类材料”目录。分类开始时将自动创建该目录及事项子目录。")
+
+    pending_dir = None
+    for name in ("待分类材料", "待分类"):
+        candidate = root / name
+        if candidate.exists() and candidate.is_dir():
+            pending_dir = candidate
+            break
+    if pending_dir is None:
+        errors.append("缺少“待分类材料”目录（兼容目录名：待分类）。")
+
+    pending_count = 0
+    if pending_dir is not None:
+        valid_exts = {".jpg", ".jpeg", ".png", ".bmp", ".gif", ".webp", ".pdf"}
+        pending_count = sum(1 for item in pending_dir.iterdir() if item.is_file() and item.suffix.lower() in valid_exts)
+        if pending_count == 0:
+            errors.append(f"目录“{pending_dir.name}”中未找到可处理文件（支持 jpg/jpeg/png/bmp/gif/webp/pdf）。")
+
+    # 尝试读取类别，给出更明确的格式错误
+    categories_count = 0
+    if factors_file is not None:
+        try:
+            categories = []
+            for item in read_factors_script(paths, str(root)):
+                if item.get("material"):
+                    categories.append(item["material"])
+            categories_count = len(set(categories))
+            if categories_count == 0:
+                warnings.append("factors 中未解析到材料名称（材料名称列可能为空或格式不符合预期）。")
+        except Exception as exc:
+            errors.append(f"factors 文件解析失败：{exc}")
+
+    return {
+        "ok": len(errors) == 0,
+        "errors": errors,
+        "warnings": warnings,
+        "meta": {
+            "work_dir": str(root),
+            "factors_file": str(factors_file) if factors_file else "",
+            "pending_dir": pending_dir.name if pending_dir else "",
+            "pending_files": pending_count,
+            "categories": categories_count,
+        },
+    }
 
 
 def run_test_classify(paths: Any, settings: dict[str, Any], work_dir: str, prompt_type: str, prompt_content: str, log_cb: Optional[Any] = None) -> dict[str, Any]:
@@ -900,6 +1053,42 @@ def build_zip_archive(file_paths: list[Path]) -> bytes:
     with ZipFile(buffer, "w", compression=ZIP_DEFLATED) as zip_file:
         for file_path in file_paths:
             zip_file.writestr(file_path.name, file_path.read_bytes())
+    return buffer.getvalue()
+
+
+def build_zip_from_directory(root_dir: Path) -> bytes:
+    buffer = BytesIO()
+    with ZipFile(buffer, "w", compression=ZIP_DEFLATED) as zip_file:
+        for item in sorted(root_dir.rglob("*")):
+            if item.is_file():
+                arcname = item.relative_to(root_dir.parent)
+                zip_file.writestr(str(arcname), item.read_bytes())
+    return buffer.getvalue()
+
+
+def build_zip_from_workdir(work_dir: Path, classified_dir: Path) -> bytes:
+    """分类结果下载包：已分类材料 + 关键产物文件"""
+    buffer = BytesIO()
+    with ZipFile(buffer, "w", compression=ZIP_DEFLATED) as zip_file:
+        # 1) 已分类材料目录
+        for item in sorted(classified_dir.rglob("*")):
+            if item.is_file():
+                arcname = item.relative_to(work_dir)
+                zip_file.writestr(str(arcname), item.read_bytes())
+
+        # 2) 分类关键结果文件（若存在）
+        optional_files = [
+            "最新分类信息提取提示词.txt",
+            "最新分类附件归集提示词.txt",
+            "分类信息提取提示词模板.txt",
+            "分类附件归集提示词模板.txt",
+            "classification_report.json",
+        ]
+        for name in optional_files:
+            file_path = work_dir / name
+            if file_path.exists() and file_path.is_file():
+                zip_file.writestr(name, file_path.read_bytes())
+
     return buffer.getvalue()
 
 
@@ -1153,6 +1342,33 @@ async def get_workspace(workspace_id: str, request: Request, user: Any = Depends
     return workspace_to_json(request.app.state.workspaces.get_workspace(user.id, workspace_id))
 
 
+@app.post("/api/classify/validate-workdir")
+async def classify_validate_workdir(payload: dict[str, Any], request: Request, user: Any = Depends(current_user)):
+    paths = request.app.state.paths
+    real_work_dir = _resolve_user_work_dir(paths, payload.get("workDir", ""), user.id)
+    result = validate_classify_workspace(paths, real_work_dir)
+    return {"data": result}
+
+
+@app.get("/api/classify/download-result")
+async def classify_download_result(workDir: str = Query(...), request: Request = None, user: Any = Depends(current_user)):
+    paths = request.app.state.paths
+    real_work_dir = Path(_resolve_user_work_dir(paths, workDir, user.id))
+    classified_dir = real_work_dir / "已分类材料"
+    if not classified_dir.exists() or not classified_dir.is_dir():
+        raise HTTPException(status_code=404, detail="未找到已分类材料目录")
+
+    archive = build_zip_from_workdir(real_work_dir, classified_dir)
+    filename = f"分类结果_{real_work_dir.name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip"
+    return Response(
+        content=archive,
+        media_type="application/zip",
+        headers={
+            "Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}",
+        },
+    )
+
+
 @app.post("/api/generate/prompt")
 async def generate_prompt(payload: dict[str, Any], request: Request, user: Any = Depends(current_user)):
     settings = request.app.state.ui_settings.load_front()
@@ -1173,6 +1389,15 @@ async def generate_prompt(payload: dict[str, Any], request: Request, user: Any =
                      error=str(exc), success=False, elapsed_s=time.time() - start)
         fail(400, str(exc))
     return {"data": data}
+
+
+@app.post("/api/generate/validate-factors")
+async def validate_generate_factors(payload: dict[str, Any], request: Request, user: Any = Depends(current_user)):
+    paths = request.app.state.paths
+    real_work_dir = _resolve_user_work_dir(paths, payload.get("workDir", ""), user.id)
+    selected_materials = payload.get("materials") or []
+    result = validate_factors_for_generate(paths, real_work_dir, selected_materials)
+    return {"data": result}
 
 
 @app.post("/api/generate/verify")

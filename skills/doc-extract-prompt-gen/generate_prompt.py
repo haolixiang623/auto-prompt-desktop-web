@@ -2,6 +2,7 @@ import os
 import csv
 import base64
 import json
+import re
 from pathlib import Path
 from datetime import datetime
 
@@ -713,18 +714,43 @@ def generate_smart_rules(client, factors, analysis_result):
 
 def parse_smart_rules(rules_json_str):
     """解析 Qwen 返回的智能规则 JSON"""
+    def _extract_json_block(text):
+        if "```json" in text:
+            start = text.find("```json") + 7
+            end = text.find("```", start)
+            return text[start:end].strip()
+        if "```" in text:
+            start = text.find("```") + 3
+            end = text.find("```", start)
+            return text[start:end].strip()
+        return text.strip()
+
+    def _escape_inner_quotes_in_json_values(text):
+        """
+        修复模型常见的 JSON 输出问题：
+        字段值内部出现未转义英文双引号（例如 "No."），导致 json.loads 失败。
+        仅处理 name/rule/format 三个字段，尽量减少副作用。
+        """
+        field_pattern = re.compile(r'^(\s*"(name|rule|format)"\s*:\s*")(.*)("\s*,?\s*)$')
+        fixed_lines = []
+        for line in text.splitlines():
+            matched = field_pattern.match(line)
+            if not matched:
+                fixed_lines.append(line)
+                continue
+            prefix, _, content, suffix = matched.groups()
+            content = re.sub(r'(?<!\\)"', r'\\"', content)
+            fixed_lines.append(f"{prefix}{content}{suffix}")
+        return "\n".join(fixed_lines)
+
     try:
-        # 提取 JSON 代码块
-        if "```json" in rules_json_str:
-            start = rules_json_str.find("```json") + 7
-            end = rules_json_str.find("```", start)
-            rules_json_str = rules_json_str[start:end].strip()
-        elif "```" in rules_json_str:
-            start = rules_json_str.find("```") + 3
-            end = rules_json_str.find("```", start)
-            rules_json_str = rules_json_str[start:end].strip()
-        
-        rules_data = json.loads(rules_json_str)
+        rules_json_str = _extract_json_block(rules_json_str)
+        try:
+            rules_data = json.loads(rules_json_str)
+        except Exception:
+            repaired = _escape_inner_quotes_in_json_values(rules_json_str)
+            rules_data = json.loads(repaired)
+
         factors = []
         for i, item in enumerate(rules_data.get('factors', []), start=1):
             factors.append({

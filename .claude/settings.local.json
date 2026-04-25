@@ -42,11 +42,11 @@
       "/Users/gooddream/Desktop/projects/auto-prompt-desktop/src-tauri/icons"
     ]
   },
-  "api": {
-    "openai": {
-      "apiKey": "sk-0a66c03f4178cc59b9f9fb760bb3f5b6",
-      "baseURL": "https://api.asxs.top/v1",
-      "model": "gpt-5.4"
-    }
+  "model": "claude-sonnet-4-6",
+  "env": {
+    "ANTHROPIC_BASE_URL": "https://www.manbouapi.com",
+    "ANTHROPIC_AUTH_TOKEN": "sk-MAbwwERpv7dl5IIPg0pkpuQpO1Ranyncx5BtScBXvWBsEhHi",
+    "ANTHROPIC_MODEL": "claude-sonnet-4-6",
+    "ANTHROPIC_SMALL_FAST_MODEL": "claude-haiku-4-5-20251001"
   }
 }
