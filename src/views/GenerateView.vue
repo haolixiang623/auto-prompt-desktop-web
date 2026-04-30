@@ -761,6 +761,20 @@
                       {{ fjCopiedItem === r.material ? '已复制' : '复制' }}
                     </button>
                   </div>
+                  <div v-else class="flex items-center gap-1.5 flex-shrink-0">
+                    <button @click="retrySingleMaterial(r.material)"
+                      :disabled="isRunning || !!retryingMaterials[r.material]"
+                      class="flex items-center gap-1 px-2 py-1 rounded text-xs transition"
+                      :class="!isRunning && !retryingMaterials[r.material]
+                        ? 'bg-orange-100 text-orange-700 hover:bg-orange-200'
+                        : 'bg-gray-100 text-gray-400 cursor-not-allowed'">
+                      <svg v-if="retryingMaterials[r.material]" class="w-3 h-3 animate-spin" fill="none" viewBox="0 0 24 24">
+                        <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
+                        <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"/>
+                      </svg>
+                      {{ retryingMaterials[r.material] ? '生成中...' : '重新生成' }}
+                    </button>
+                  </div>
                 </div>
                 <!-- JSON预览展开 -->
                 <div v-if="fjPreviewItem === r" class="px-4 pb-4 bg-blue-50 border-t border-blue-100">
@@ -878,6 +892,7 @@ const isSaving = ref(false)
 const batchStartTime = ref(0)       // 批量生成开始时间
 const batchElapsed = ref(0)         // 批量总耗时(秒)
 const currentElapsed = ref(0)       // 当前材料耗时(秒)
+const retryingMaterials = ref({})   // { materialName: boolean }
 let elapsedTimer = null
 
 // Step3: 逐材料验证状态
@@ -1211,6 +1226,7 @@ async function loadDirectoryData() {
   selectedMaterials.value = []
   factorValidationErrors.value = []
   batchResults.value = {}
+  retryingMaterials.value = {}
   verifyResults.value = {}
   editablePrompt.value = ''
   try {
@@ -1230,27 +1246,35 @@ async function loadDirectoryData() {
   }
 }
 
-async function goStep2() {
-  if (!canGenerate.value || isRunning.value) return
+async function validateFactorsForMaterials(materialNames) {
   factorValidationErrors.value = []
   try {
     const validationResult = await apiClient.post('/api/generate/validate-factors', {
       workDir: workDir.value,
-      materials: selectedMaterials.value.map(item => item.name)
+      materials: materialNames
     })
     const validation = validationResult?.data || {}
     if (!validation.ok) {
       factorValidationErrors.value = Array.isArray(validation.errors) ? validation.errors : ['factors 格式校验失败，请检查文件内容。']
       addLog('factors 格式校验未通过，已阻止生成。', 'error')
       factorValidationErrors.value.forEach((msg) => addLog(`校验失败: ${msg}`, 'error'))
-      return
+      return false
     }
     const warnings = Array.isArray(validation.warnings) ? validation.warnings : []
     warnings.forEach((msg) => addLog(`校验提示: ${msg}`, 'warning'))
+    return true
   } catch (error) {
     const errMsg = `factors 格式校验请求失败: ${error}`
     factorValidationErrors.value = [errMsg]
     addLog(errMsg, 'error')
+    return false
+  }
+}
+
+async function goStep2() {
+  if (!canGenerate.value || isRunning.value) return
+  const validationOk = await validateFactorsForMaterials(selectedMaterials.value.map(item => item.name))
+  if (!validationOk) {
     return
   }
 
@@ -1327,6 +1351,51 @@ async function goStep2() {
   // 标记工作区生成状态
   const finalStatus = successCount > 0 ? 'done' : 'error'
   apiClient.put('/api/workspaces/gen-status', { workDir: workDir.value, status: finalStatus }).catch(() => {})
+}
+
+async function retrySingleMaterial(materialName) {
+  if (!materialName || isRunning.value || retryingMaterials.value[materialName]) return
+  const validationOk = await validateFactorsForMaterials([materialName])
+  if (!validationOk) return
+
+  retryingMaterials.value = { ...retryingMaterials.value, [materialName]: true }
+  const matStart = Date.now()
+  addLog(`[${materialName}] 开始单个重新生成...`, 'info')
+  try {
+    const generateResult = await apiClient.post('/api/generate/prompt', {
+      workDir: workDir.value,
+      materialName,
+      modelCfgId: selectedModelId.value || null
+    })
+    const elapsed = ((Date.now() - matStart) / 1000).toFixed(1)
+    const resultData = { ...generateResult.data }
+    if (!resultData.prompt_template?.trim() && resultData.output_file) {
+      const fileResult = await apiClient.get('/api/files/read', { path: resultData.output_file })
+      resultData.prompt_template = fileResult?.data?.content || ''
+    }
+    if (!resultData.prompt_template?.trim()) {
+      throw new Error('提示词文件为空，未生成有效内容')
+    }
+    batchResults.value[materialName] = { ...resultData, success: true, elapsed }
+    activeBatchMaterial.value = materialName
+    editablePrompt.value = resultData.prompt_template || ''
+    promptModified.value = false
+    nextTick(() => { if (promptTextarea.value) promptTextarea.value.scrollTop = 0 })
+    addLog(`[${materialName}] 单个重新生成成功！耗时 ${elapsed}s`, 'success')
+    if (resultData.output_file) addLog(`已保存: ${resultData.output_file}`, 'success')
+  } catch (error) {
+    const elapsed = ((Date.now() - matStart) / 1000).toFixed(1)
+    const errStr = String(error)
+    const msg = errStr.includes('API Key') || errStr.includes('DASHSCOPE')
+      ? '未配置API密钥，请前往【设置】页面配置 DASHSCOPE_API_KEY'
+      : String(error)
+    batchResults.value[materialName] = { success: false, error: msg, prompt_template: '', output_file: '', elapsed }
+    addLog(`[${materialName}] 单个重新生成失败: ${msg}`, 'error')
+  } finally {
+    const nextState = { ...retryingMaterials.value }
+    delete nextState[materialName]
+    retryingMaterials.value = nextState
+  }
 }
 
 async function runVerify() {
@@ -1546,6 +1615,7 @@ async function clear() {
   materials.value = []
   selectedMaterials.value = []
   batchResults.value = {}
+  retryingMaterials.value = {}
   verifyResults.value = {}
   verifyWorkDir.value = ''
   editablePrompt.value = ''

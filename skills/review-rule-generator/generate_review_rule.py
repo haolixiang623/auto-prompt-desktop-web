@@ -177,7 +177,14 @@ def extract_factor_refs(text):
 
 def refs_to_factor_placeholders(refs):
     """将要素引用列表转为 $载体:要素$ 格式"""
-    return [f"${mat}:{field}$" for mat, field in refs]
+    return [make_factor_placeholder(mat, field) for mat, field in refs]
+
+
+def make_factor_placeholder(material_name, field_name):
+    """仅规范中间分隔符为英文半角冒号，保留两侧原文"""
+    mat = str(material_name or "").replace("：", ":").strip()
+    field = str(field_name or "").replace("：", ":").strip()
+    return f"${mat}:{field}$"
 
 
 # ─────────────────────────── 规则类型推断 ─────────────────────────────
@@ -416,7 +423,7 @@ def build_keypoint_rule2(kpname, rule_desc, passreason, nopassreason, material_n
     if len(refs) == 1:
         # 单要素: 非空检查
         mat, field = refs[0]
-        placeholder = f"${mat}:{field}$"
+        placeholder = make_factor_placeholder(mat, field)
         operator, data_type, sr, delimiter = infer_operator_and_type(rule_desc, refs[0])
 
         if operator in ("notblank", "blank"):
@@ -434,7 +441,7 @@ def build_keypoint_rule2(kpname, rule_desc, passreason, nopassreason, material_n
                 "delimiter": None,
                 "arrayKeys": None,
             }
-            group_fail = nopassreason or f"{mat}:{field}未识别到"
+            group_fail = nopassreason or ""
         else:
             # 尝试找固定值比较 (如 "长度为18位")
             len_match = re.search(r'(\d+)位', rule_desc)
@@ -455,7 +462,7 @@ def build_keypoint_rule2(kpname, rule_desc, passreason, nopassreason, material_n
                 "delimiter": delimiter,
                 "arrayKeys": None,
             }
-            group_fail = nopassreason or f"{mat}:{field}【${mat}:{field}$】不符合要求"
+            group_fail = nopassreason or ""
 
         conditions.append(cond)
         groups.append({
@@ -468,8 +475,8 @@ def build_keypoint_rule2(kpname, rule_desc, passreason, nopassreason, material_n
         # 双要素比较
         mat_a, field_a = refs[0]
         mat_b, field_b = refs[1]
-        placeholder_a = f"${mat_a}:{field_a}$"
-        placeholder_b = f"${mat_b}:{field_b}$"
+        placeholder_a = make_factor_placeholder(mat_a, field_a)
+        placeholder_b = make_factor_placeholder(mat_b, field_b)
 
         operator, data_type, sr, delimiter = infer_operator_and_type(rule_desc, refs[0], refs[1])
 
@@ -495,15 +502,15 @@ def build_keypoint_rule2(kpname, rule_desc, passreason, nopassreason, material_n
 
         # 生成 groupFailReason
         if operator == "eq":
-            group_fail = nopassreason or f"{mat_a}:{field_a}【&${mat_a}:{field_a}$@】应等于【&${mat_b}:{field_b}$@】"
+            group_fail = nopassreason or ""
         elif operator in ("ge", "gt"):
-            group_fail = nopassreason or f"{mat_a}:{field_a}【&${mat_a}:{field_a}$@】应大于等于【&${mat_b}:{field_b}$@】"
+            group_fail = nopassreason or ""
         elif operator in ("le", "lt"):
-            group_fail = nopassreason or f"{mat_a}:{field_a}【&${mat_a}:{field_a}$@】应不超过【&${mat_b}:{field_b}$@】"
+            group_fail = nopassreason or ""
         elif operator == "contains":
-            group_fail = nopassreason or f"{mat_a}:{field_a}应包含{mat_b}:{field_b}"
+            group_fail = nopassreason or ""
         else:
-            group_fail = nopassreason or f"{mat_a}:{field_a}【&${mat_a}:{field_a}$@】与{mat_b}:{field_b}不一致"
+            group_fail = nopassreason or ""
 
         groups.append({
             "logicToNext": None,
@@ -514,7 +521,7 @@ def build_keypoint_rule2(kpname, rule_desc, passreason, nopassreason, material_n
     else:
         # 多要素: 逐对构建多组或多条件
         for i, (mat, field) in enumerate(refs):
-            placeholder = f"${mat}:{field}$"
+            placeholder = make_factor_placeholder(mat, field)
             operator, data_type, sr, delimiter = infer_operator_and_type(rule_desc, (mat, field))
             is_last = (i == len(refs) - 1)
 
@@ -551,7 +558,7 @@ def build_keypoint_rule2(kpname, rule_desc, passreason, nopassreason, material_n
             conditions.append(cond)
 
         fields_desc = "、".join([f"{m}:{f}" for m, f in refs])
-        group_fail = nopassreason or f"{fields_desc}必须同时识别到"
+        group_fail = nopassreason or ""
         groups.append({
             "logicToNext": None,
             "groupFailReason": group_fail,
@@ -579,7 +586,7 @@ def build_keypoint_rule1(kpname, rule_desc, passreason, nopassreason, material_n
     """构建 review_rule="1" (大模型LLM) 的要点JSON。"""
     # 将 #材料-字段# 转换为 $材料:字段$ 格式用于LLM提示词
     content = FACTOR_REF_PATTERN.sub(
-        lambda m: f"${m.group(1).strip()}:{m.group(2).strip()}$",
+        lambda m: make_factor_placeholder(m.group(1).strip(), m.group(2).strip()),
         rule_desc or ""
     )
     if not content:
@@ -605,7 +612,7 @@ def build_keypoint_rule3(kpname, rule_desc, passreason, nopassreason, material_n
     # 生成基础Groovy脚本模板
     if refs:
         input_lines = "\n".join([
-            f'def {_sanitize_var(field)} = input.get("{mat}:{field}")'
+            f'def {_sanitize_var(field)} = input.get("{str(mat).replace("：", ":").strip()}:{str(field).replace("：", ":").strip()}")'
             for mat, field in refs
         ])
         var_checks = " || ".join([f'{_sanitize_var(field)} == null' for _, field in refs])
@@ -721,8 +728,9 @@ def process_material_rules(material_name, keypoints_info, use_llm=False,
                     "kpname": kpname,
                     "content": llm_result.get("content", ""),
                     "review_rule_text": llm_result.get("review_rule_text", rule_desc),
-                    "passreason": llm_result.get("passreason", passreason or ""),
-                    "nopassreason": llm_result.get("nopassreason", nopassreason or ""),
+                    # 规则：优先使用 Excel 列值；Excel 为空则保持空
+                    "passreason": passreason or "",
+                    "nopassreason": nopassreason or "",
                     "review_rule": review_rule,
                 }
                 if review_rule == "2" and llm_result.get("review_conditions"):
