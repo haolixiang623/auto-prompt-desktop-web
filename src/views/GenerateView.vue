@@ -346,7 +346,7 @@
               </svg>
             </div>
             <p class="text-base font-semibold text-gray-700">正在生成「{{ batchCurrentMaterial }}」提示词...</p>
-            <p class="text-sm text-gray-400 mt-1">调用 Qwen VL 分析图片要素，请稍候</p>
+            <p class="text-sm text-gray-400 mt-1">调用所选模型分析图片要素，请稍候</p>
             <p class="text-lg font-mono font-bold text-blue-500 mt-3">{{ batchElapsed }}s</p>
           </div>
 
@@ -550,7 +550,7 @@
               </svg>
               {{ isVerifying ? `验证中... ${verifyElapsed}s` : verifyResults[activeVerifyMaterial] ? '重新验证' : '执行验证提取' }}
             </button>
-            <span class="text-xs text-gray-400">调用 Qwen VL 对「{{ activeVerifyMaterial }}」样本执行提取{{ verifyWorkDir ? '（验证材料）' : '' }}</span>
+            <span class="text-xs text-gray-400">调用所选模型对「{{ activeVerifyMaterial }}」样本执行提取{{ verifyWorkDir ? '（验证材料）' : '' }}</span>
           </div>
 
           <!-- 验证中 loading -->
@@ -1017,9 +1017,9 @@ async function loadModels() {
   try {
     const settings = await apiClient.get('/api/settings')
     const mods = (settings.models && settings.models.length > 0) ? settings.models : [
-      { id: '1', name: 'Qwen VL Max', model_id: 'qwen-vl-max', type: 'vl' },
-      { id: '2', name: 'Qwen VL Plus', model_id: 'qwen-vl-plus', type: 'vl' },
-      { id: '3', name: 'Qwen2.5 VL 72B', model_id: 'qwen2.5-vl-72b-instruct', type: 'vl' },
+      { id: '1', name: 'Qwen VL Max', model: 'qwen-vl-max', type: 'vl' },
+      { id: '2', name: 'Qwen VL Plus', model: 'qwen-vl-plus', type: 'vl' },
+      { id: '3', name: 'Qwen2.5 VL 72B', model: 'qwen2.5-vl-72b-instruct', type: 'vl' },
     ]
     availableModels.value = mods
     const defaultId = settings.default_model_id || mods[0]?.id || ''
@@ -1324,8 +1324,8 @@ async function goStep2() {
     } catch (error) {
       const elapsed = ((Date.now() - matStart) / 1000).toFixed(1)
       const errStr = String(error)
-      const msg = errStr.includes('API Key') || errStr.includes('DASHSCOPE')
-        ? '未配置API密钥，请前往【设置】页面配置 DASHSCOPE_API_KEY'
+      const msg = errStr.includes('API Key') || errStr.includes('DASHSCOPE') || errStr.includes('OPENAI_API_KEY')
+        ? '未配置可用的 API 密钥，请前往【设置】页面配置默认 API Key 或模型专属 API Key'
         : String(error)
       batchResults.value[mat.name] = { success: false, error: msg, prompt_template: '', output_file: '', elapsed }
       addLog(`[${mat.name}] 生成失败: ${msg}`, 'error')
@@ -1386,8 +1386,8 @@ async function retrySingleMaterial(materialName) {
   } catch (error) {
     const elapsed = ((Date.now() - matStart) / 1000).toFixed(1)
     const errStr = String(error)
-    const msg = errStr.includes('API Key') || errStr.includes('DASHSCOPE')
-      ? '未配置API密钥，请前往【设置】页面配置 DASHSCOPE_API_KEY'
+    const msg = errStr.includes('API Key') || errStr.includes('DASHSCOPE') || errStr.includes('OPENAI_API_KEY')
+      ? '未配置可用的 API 密钥，请前往【设置】页面配置默认 API Key 或模型专属 API Key'
       : String(error)
     batchResults.value[materialName] = { success: false, error: msg, prompt_template: '', output_file: '', elapsed }
     addLog(`[${materialName}] 单个重新生成失败: ${msg}`, 'error')

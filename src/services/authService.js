@@ -44,11 +44,11 @@ export async function ensureAuthLoaded() {
   return authLoadPromise
 }
 
-export async function login(username, password) {
-  const response = await apiClient.post('/api/auth/login', { username, password })
+export async function login(username, password, { rememberMe = false } = {}) {
+  const response = await apiClient.post('/api/auth/login', { username, password, rememberMe })
   // 处理嵌套的响应结构
   const session = response.data || response
-  setAuthSession(session)
+  setAuthSession(session, { rememberMe })
   return session
 }
 

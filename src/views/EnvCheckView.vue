@@ -194,7 +194,7 @@
               <StatusBadge :ok="apiKeyConfigured" />
               <div>
                 <div class="text-sm font-medium text-gray-800">
-                  {{ apiKeyConfigured ? 'DASHSCOPE_API_KEY 已配置' : 'API Key 未配置' }}
+                  {{ apiKeyConfigured ? '模型 API Key 已配置' : 'API Key 未配置' }}
                 </div>
                 <div class="text-xs text-gray-500 mt-0.5">
                   {{ apiKeyConfigured

@@ -17,7 +17,7 @@
     "docker:verify": "powershell -ExecutionPolicy Bypass -File ./scripts/docker-verify.ps1",
     "test": "npm run test:frontend && npm run test:backend",
     "test:frontend": "node --test",
-    "test:backend": "python -m pytest -q tests/test_workdir_resolution.py tests/test_review_rule_task_route.py tests/test_classify_validation_and_download.py tests/test_review_rule_reason_policy.py",
+    "test:backend": "python -m pytest -q tests/test_workdir_resolution.py tests/test_review_rule_task_route.py tests/test_classify_validation_and_download.py tests/test_review_rule_reason_policy.py tests/test_generate_prompt_no_local_case_library.py tests/test_generate_prompt_exit_codes.py tests/test_model_config_param_propagation.py tests/test_auth_session_persistence.py",
     "test:regression": "./scripts/test-regression.sh"
   },
   "dependencies": {

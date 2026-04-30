@@ -13,7 +13,7 @@ import threading
 import time
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from io import BytesIO
 from pathlib import Path
 from typing import Any, Optional
@@ -34,12 +34,15 @@ from .core.data import DataStore
 from .core.excel_parser import parse_excel_for_cases, parse_excel_for_review_rules
 
 
+OPENAI_COMPAT_BASE_URL = "https://api.openai.com/v1"
+DASHSCOPE_COMPAT_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+
 DEFAULT_MODELS = [
-    {"id": "1", "name": "Qwen VL Max", "model_id": "qwen-vl-max", "type": "vl", "params": []},
-    {"id": "2", "name": "Qwen VL Plus", "model_id": "qwen-vl-plus", "type": "vl", "params": []},
-    {"id": "3", "name": "Qwen2.5 VL 72B", "model_id": "qwen2.5-vl-72b-instruct", "type": "vl", "params": []},
-    {"id": "4", "name": "Qwen Plus (Text)", "model_id": "qwen-plus", "type": "text", "params": []},
-    {"id": "5", "name": "Qwen Max (Text)", "model_id": "qwen-max", "type": "text", "params": []},
+    {"id": "1", "name": "Qwen VL Max", "model": "qwen-vl-max", "base_url": DASHSCOPE_COMPAT_BASE_URL, "api_key": "", "type": "vl", "params": []},
+    {"id": "2", "name": "Qwen VL Plus", "model": "qwen-vl-plus", "base_url": DASHSCOPE_COMPAT_BASE_URL, "api_key": "", "type": "vl", "params": []},
+    {"id": "3", "name": "Qwen2.5 VL 72B", "model": "qwen2.5-vl-72b-instruct", "base_url": DASHSCOPE_COMPAT_BASE_URL, "api_key": "", "type": "vl", "params": []},
+    {"id": "4", "name": "Qwen Plus (Text)", "model": "qwen-plus", "base_url": DASHSCOPE_COMPAT_BASE_URL, "api_key": "", "type": "text", "params": []},
+    {"id": "5", "name": "Qwen Max (Text)", "model": "qwen-max", "base_url": DASHSCOPE_COMPAT_BASE_URL, "api_key": "", "type": "text", "params": []},
 ]
 
 
@@ -55,6 +58,41 @@ def load_json(path: Path, default: Any) -> Any:
 def write_json(path: Path, value: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(value, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def normalize_model_entry(raw: Any) -> dict[str, Any]:
+    entry = raw if isinstance(raw, dict) else {}
+    model = str(entry.get("model") or entry.get("model_id") or entry.get("model_name") or "").strip()
+    name = str(entry.get("name") or model or "未命名模型").strip()
+    legacy_style = "model_id" in entry or "base_url" not in entry
+    default_base_url = DASHSCOPE_COMPAT_BASE_URL if legacy_style else OPENAI_COMPAT_BASE_URL
+    base_url = str(entry.get("base_url") or entry.get("api_base") or default_base_url).strip() or default_base_url
+    api_key = str(entry.get("api_key") or "").strip()
+    model_type = str(entry.get("type") or "vl").strip() or "vl"
+    params = entry.get("params")
+    if not isinstance(params, (list, dict)):
+        params = []
+    return {
+        "id": str(entry.get("id") or ""),
+        "name": name,
+        "model": model,
+        "base_url": base_url,
+        "api_key": api_key,
+        "type": model_type,
+        "params": params,
+    }
+
+
+def normalize_models(raw_models: Any) -> list[dict[str, Any]]:
+    if not isinstance(raw_models, list):
+        raw_models = []
+    normalized: list[dict[str, Any]] = []
+    for index, item in enumerate(raw_models, start=1):
+        entry = normalize_model_entry(item)
+        if not entry["id"]:
+            entry["id"] = str(index)
+        normalized.append(entry)
+    return normalized
 
 
 def fail(status: int, message: str) -> None:
@@ -86,6 +124,7 @@ def workspace_to_json(summary: Any) -> dict[str, Any]:
 
 
 PASSWORD_HASHER = PasswordHasher()
+SESSION_TTL = timedelta(days=1)
 
 
 # ─────────────────── LLM 调用日志存储（内存，最多2000条） ───────────────────
@@ -287,7 +326,6 @@ class WorkspaceService:
 class AuthStore:
     def __init__(self, db_path: Path):
         self.db_path = db_path
-        self._sessions: dict[str, str] = {}
         self.initialize()
 
     def initialize(self) -> None:
@@ -296,7 +334,12 @@ class AuthStore:
             conn.execute(
                 "CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, name TEXT NOT NULL, username TEXT UNIQUE NOT NULL, password_hash TEXT NOT NULL, role TEXT NOT NULL, active INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL)"
             )
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS sessions (token TEXT PRIMARY KEY, user_id TEXT NOT NULL, expires_at TEXT NOT NULL, created_at TEXT NOT NULL)"
+            )
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON sessions (user_id)")
             conn.commit()
+        self._purge_expired_sessions()
         self._ensure_admin()
 
     def _ensure_admin(self) -> None:
@@ -331,21 +374,56 @@ class AuthStore:
                 valid = False
             return self._row_to_user(row[:6]) if valid else None
 
-    def create_session(self, user: Any) -> str:
+    def _purge_expired_sessions(self, now: Optional[datetime] = None) -> None:
+        expires_before = (now or datetime.utcnow()).isoformat()
+        with sqlite3.connect(str(self.db_path)) as conn:
+            conn.execute("DELETE FROM sessions WHERE expires_at <= ?", (expires_before,))
+            conn.commit()
+
+    def create_session(self, user: Any, remember_me: bool = False) -> dict[str, str]:
         token = secrets.token_urlsafe(32)
-        self._sessions[token] = user.id
-        return token
+        created_at = datetime.utcnow()
+        # 登录态统一保留 1 天；是否“记住登录”由前端决定写入 sessionStorage 还是 localStorage。
+        expires_at = created_at + SESSION_TTL
+        with sqlite3.connect(str(self.db_path)) as conn:
+            conn.execute(
+                "INSERT INTO sessions (token, user_id, expires_at, created_at) VALUES (?, ?, ?, ?)",
+                (token, user.id, expires_at.isoformat(), created_at.isoformat()),
+            )
+            conn.commit()
+        return {"token": token, "expires_at": expires_at.isoformat()}
 
     def get_user_from_token(self, token: str) -> Any:
-        user_id = self._sessions.get(token)
-        if not user_id:
-            return None
+        self._purge_expired_sessions()
         with sqlite3.connect(str(self.db_path)) as conn:
-            row = conn.execute("SELECT id, name, username, role, active, created_at FROM users WHERE id = ?", (user_id,)).fetchone()
-            return self._row_to_user(row) if row else None
+            session_row = conn.execute("SELECT user_id, expires_at FROM sessions WHERE token = ?", (token,)).fetchone()
+            if session_row is None:
+                return None
+
+            if session_row[1] <= datetime.utcnow().isoformat():
+                conn.execute("DELETE FROM sessions WHERE token = ?", (token,))
+                conn.commit()
+                return None
+
+            row = conn.execute(
+                "SELECT id, name, username, role, active, created_at FROM users WHERE id = ?",
+                (session_row[0],),
+            ).fetchone()
+            if row is None or not bool(row[4]):
+                conn.execute("DELETE FROM sessions WHERE token = ?", (token,))
+                conn.commit()
+                return None
+            return self._row_to_user(row)
 
     def delete_session(self, token: str) -> None:
-        self._sessions.pop(token, None)
+        with sqlite3.connect(str(self.db_path)) as conn:
+            conn.execute("DELETE FROM sessions WHERE token = ?", (token,))
+            conn.commit()
+
+    def delete_sessions_for_user(self, user_id: str) -> None:
+        with sqlite3.connect(str(self.db_path)) as conn:
+            conn.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
+            conn.commit()
 
     def list_users(self) -> list[Any]:
         with sqlite3.connect(str(self.db_path)) as conn:
@@ -370,13 +448,19 @@ class AuthStore:
         with sqlite3.connect(str(self.db_path)) as conn:
             cursor = conn.execute("UPDATE users SET password_hash = ? WHERE id = ?", (PASSWORD_HASHER.hash(password), user_id))
             conn.commit()
-            return cursor.rowcount > 0
+            updated = cursor.rowcount > 0
+        if updated:
+            self.delete_sessions_for_user(user_id)
+        return updated
 
     def update_user_status(self, user_id: str, active: bool) -> bool:
         with sqlite3.connect(str(self.db_path)) as conn:
             cursor = conn.execute("UPDATE users SET active = ? WHERE id = ?", (1 if active else 0, user_id))
             conn.commit()
-            return cursor.rowcount > 0
+            updated = cursor.rowcount > 0
+        if updated and not active:
+            self.delete_sessions_for_user(user_id)
+        return updated
 
 
 class TaskStore:
@@ -454,29 +538,62 @@ class UiSettingsStore:
         self.local_path = local_path
         self.project_path = project_path
 
+    def _models_need_migration(self, data: Any) -> bool:
+        models = data.get("models") if isinstance(data, dict) else None
+        if not isinstance(models, list):
+            return False
+        for model in models:
+            if not isinstance(model, dict):
+                continue
+            if "model_id" in model:
+                return True
+            if "model" not in model or "base_url" not in model or "api_key" not in model:
+                return True
+        return False
+
     def load_front(self) -> dict[str, Any]:
         project = load_json(self.project_path, {})
         local = load_json(self.local_path, {})
+        fallback_api_key = (
+            local.get("api_key")
+            or project.get("api_key")
+            or os.environ.get("OPENAI_API_KEY")
+            or os.environ.get("DASHSCOPE_API_KEY", "")
+        )
+        project_models = normalize_models(project.get("models", DEFAULT_MODELS))
+        local_models = normalize_models(local.get("models", project_models))
+        default_model_id = local.get("default_model_id", project.get("default_model_id", local_models[0]["id"] if local_models else "1"))
+        model_name = local.get("model_name", project.get("model_name", local_models[0]["model"] if local_models else ""))
         settings = {
-            "api_key": local["api_key"] if "api_key" in local else os.environ.get("DASHSCOPE_API_KEY", ""),
+            "api_key": local["api_key"] if "api_key" in local else fallback_api_key,
             "api_key_configured": False,
-            "default_model_id": local.get("default_model_id", project.get("default_model_id", "1")),
-            "model_name": local.get("model_name", project.get("model_name", "qwen-vl-max")),
-            "models": local.get("models", project.get("models", DEFAULT_MODELS)),
+            "default_model_id": default_model_id,
+            "model_name": model_name,
+            "models": local_models or normalize_models(DEFAULT_MODELS),
             "god_prompt": local.get("god_prompt", project.get("god_prompt", PromptBundle.classify)),
             "extract_god_prompt": local.get("extract_god_prompt", project.get("extract_god_prompt", PromptBundle.extract)),
             "llm_timeout": local.get("llm_timeout", project.get("llm_timeout", 120)),
         }
-        settings["api_key_configured"] = bool(settings["api_key"])
+        settings["api_key_configured"] = bool(
+            settings["api_key"] or any(str(model.get("api_key", "")).strip() for model in settings["models"])
+        )
         selected = next((m for m in settings["models"] if m.get("id") == settings["default_model_id"]), None)
         if selected:
-            settings["model_name"] = selected.get("model_id", settings["model_name"])
+            settings["model_name"] = selected.get("model", settings["model_name"])
+        if self.local_path.exists() and self._models_need_migration(local):
+            write_json(self.local_path, {field: settings[field] for field in self.FRONT_FIELDS})
         return settings
 
     def save_front(self, payload: dict[str, Any]) -> dict[str, Any]:
         current = self.load_front()
         current.update({k: v for k, v in payload.items() if k in self.FRONT_FIELDS})
-        current["api_key_configured"] = bool(current["api_key"])
+        current["models"] = normalize_models(current.get("models"))
+        selected = next((m for m in current["models"] if m.get("id") == current.get("default_model_id")), None)
+        if selected:
+            current["model_name"] = selected.get("model", current.get("model_name", ""))
+        current["api_key_configured"] = bool(
+            current["api_key"] or any(str(model.get("api_key", "")).strip() for model in current["models"])
+        )
         write_json(self.local_path, {field: current[field] for field in self.FRONT_FIELDS})
         return current
 
@@ -491,6 +608,7 @@ class UiSettingsStore:
 class LoginRequest(BaseModel):
     username: str
     password: str
+    rememberMe: bool = False
 
 
 class CreateUserRequest(BaseModel):
@@ -561,13 +679,122 @@ def find_media_file(material_dir: Path) -> Optional[Path]:
     return None
 
 
+_DASHSCOPE_BODY_PARAMS = {
+    "enable_thinking",
+    "thinking_budget",
+    "translation_options",
+    "vl_high_resolution_images",
+    "search_options",
+}
+
+
+def normalize_model_params(params: Any) -> dict[str, Any]:
+    if isinstance(params, dict):
+        return {str(key).strip(): value for key, value in params.items() if str(key).strip()}
+    if isinstance(params, list):
+        normalized: dict[str, Any] = {}
+        for item in params:
+            if not isinstance(item, dict):
+                continue
+            key = str(item.get("key", "")).strip()
+            if not key:
+                continue
+            normalized[key] = item.get("value")
+        return normalized
+    return {}
+
+
+def resolve_model_config(settings: dict[str, Any], model_cfg_id: Optional[str]) -> dict[str, Any]:
+    selected = None
+    models = normalize_models(settings.get("models", []))
+    if model_cfg_id:
+        selected = next((m for m in models if m.get("id") == model_cfg_id), None)
+    if selected is None:
+        default_model_id = settings.get("default_model_id")
+        if default_model_id:
+            selected = next((m for m in models if m.get("id") == default_model_id), None)
+
+    model_name = settings.get("model_name", "")
+    api_key = str(settings.get("api_key") or os.environ.get("OPENAI_API_KEY") or os.environ.get("DASHSCOPE_API_KEY", "")).strip()
+    base_url = OPENAI_COMPAT_BASE_URL
+    params: dict[str, Any] = {}
+    if selected:
+        model_name = selected.get("model", model_name) or model_name
+        api_key = str(selected.get("api_key") or api_key).strip()
+        base_url = str(selected.get("base_url") or base_url).strip() or base_url
+        params = normalize_model_params(selected.get("params"))
+    elif model_name:
+        base_url = DASHSCOPE_COMPAT_BASE_URL
+
+    return {
+        "id": selected.get("id") if selected else None,
+        "model": model_name,
+        "model_id": model_name,
+        "api_key": api_key,
+        "base_url": base_url,
+        "params": params,
+        "type": selected.get("type") if selected else None,
+        "name": selected.get("name") if selected else None,
+    }
+
+
 def resolve_model_id(settings: dict[str, Any], model_cfg_id: Optional[str]) -> str:
     """Resolve a modelCfgId (string id from frontend) to the actual model_id string."""
-    if model_cfg_id:
-        for m in settings.get("models", []):
-            if m.get("id") == model_cfg_id:
-                return m.get("model_id", settings["model_name"])
-    return settings["model_name"]
+    return resolve_model_config(settings, model_cfg_id)["model_id"]
+
+
+def split_dashscope_extra_params(extra_params: Optional[dict[str, Any]]) -> dict[str, Any]:
+    if not extra_params:
+        return {}
+    standard = {k: v for k, v in extra_params.items() if k not in _DASHSCOPE_BODY_PARAMS}
+    body = {k: v for k, v in extra_params.items() if k in _DASHSCOPE_BODY_PARAMS}
+    if body:
+        standard["extra_body"] = body
+    return standard
+
+
+def test_model_connection(model: dict[str, Any], fallback_api_key: str = "", timeout: int = 30) -> dict[str, Any]:
+    normalized = normalize_model_entry(model)
+    model_name = normalized.get("model", "").strip()
+    base_url = normalized.get("base_url", "").strip() or OPENAI_COMPAT_BASE_URL
+    api_key = normalized.get("api_key", "").strip() or str(fallback_api_key or "").strip()
+
+    if not model_name:
+        raise ValueError("模型配置缺少 model")
+    if not base_url:
+        raise ValueError("模型配置缺少 base_url")
+    if not api_key:
+        raise ValueError("模型配置缺少可用的 API Key")
+
+    from openai import OpenAI
+
+    request_kwargs = {
+        "model": model_name,
+        "messages": [{"role": "user", "content": "Reply with OK only."}],
+        **split_dashscope_extra_params(normalize_model_params(normalized.get("params"))),
+    }
+    if "max_tokens" not in request_kwargs and "max_completion_tokens" not in request_kwargs:
+        request_kwargs["max_tokens"] = 16
+    if "temperature" not in request_kwargs:
+        request_kwargs["temperature"] = 0
+
+    client = OpenAI(api_key=api_key, base_url=base_url, timeout=float(timeout))
+    start = time.time()
+    response = client.chat.completions.create(**request_kwargs)
+    elapsed_s = time.time() - start
+    preview = ""
+    try:
+        preview = response.choices[0].message.content or ""
+    except Exception:
+        preview = ""
+
+    return {
+        "ok": True,
+        "model": model_name,
+        "base_url": base_url,
+        "elapsed_s": round(elapsed_s, 2),
+        "preview": preview[:200],
+    }
 
 
 def base64_image(path: Path) -> str:
@@ -575,15 +802,22 @@ def base64_image(path: Path) -> str:
         return base64.b64encode(f.read()).decode("utf-8")
 
 
-def run_verify_extraction(material_dir: Path, prompt_text: str, model_id: str, api_key: str,
-                          llm_logs: Optional[LlmLogStore] = None) -> dict[str, Any]:
+def run_verify_extraction(
+    material_dir: Path,
+    prompt_text: str,
+    model_id: str,
+    api_key: str,
+    base_url: str = OPENAI_COMPAT_BASE_URL,
+    extra_params: Optional[dict[str, Any]] = None,
+    llm_logs: Optional[LlmLogStore] = None,
+) -> dict[str, Any]:
     """Call Qwen VL to extract data from the first image using the given prompt."""
     image_path = find_media_file(material_dir)
     if image_path is None:
         return {"success": False, "error": "no image found in material directory"}
 
     from openai import OpenAI
-    client = OpenAI(api_key=api_key, base_url="https://dashscope.aliyuncs.com/compatible-mode/v1")
+    client = OpenAI(api_key=api_key, base_url=base_url)
     start = time.time()
     try:
         response = client.chat.completions.create(
@@ -600,6 +834,7 @@ def run_verify_extraction(material_dir: Path, prompt_text: str, model_id: str, a
                     ],
                 }
             ],
+            **split_dashscope_extra_params(extra_params),
         )
         elapsed_s = time.time() - start
         output = response.choices[0].message.content
@@ -663,16 +898,24 @@ def run_factor_json(paths: Any, work_dir: str, group_size: int = 4, materials: O
     return []
 
 
-def run_generate_prompt(paths: Any, settings: dict[str, Any], work_dir: str, material_name: Optional[str]) -> dict[str, Any]:
+def run_generate_prompt(
+    paths: Any,
+    settings: dict[str, Any],
+    work_dir: str,
+    material_name: Optional[str],
+    model_cfg_id: Optional[str] = None,
+) -> dict[str, Any]:
     material_dir = Path(work_dir) / material_name if material_name else Path(work_dir)
     user_id = _resolve_user_id_from_work_dir(paths, work_dir)
     script = paths.skills_dir / "doc-extract-prompt-gen" / "generate_prompt.py"
+    model_config = resolve_model_config(settings, model_cfg_id)
     env = {
         **os.environ,
-        "DASHSCOPE_API_KEY": settings["api_key"],
-        "OPENAI_API_KEY": settings["api_key"],
-        "OPENAI_BASE_URL": "https://dashscope.aliyuncs.com/compatible-mode/v1",
-        "MODEL_NAME": settings["model_name"],
+        "DASHSCOPE_API_KEY": model_config["api_key"],
+        "OPENAI_API_KEY": model_config["api_key"],
+        "OPENAI_BASE_URL": model_config["base_url"],
+        "MODEL_NAME": model_config["model"],
+        "GENERATE_EXTRA_PARAMS": json.dumps(model_config["params"], ensure_ascii=False),
         "LLM_TIMEOUT": str(settings.get("llm_timeout", 120)),
         "EXTRACT_GOD_PROMPT": settings["extract_god_prompt"],
         "AUTO_PROMPT_SKILLS_DIR": str(paths.skills_dir),
@@ -822,15 +1065,26 @@ def run_lines(command: list[str], env: dict[str, str], cwd: Optional[str], log_c
     return lines
 
 
-def run_classify(paths: Any, settings: dict[str, Any], work_dir: str, max_rounds: int, log_cb: Optional[Any] = None) -> dict[str, Any]:
+def run_classify(
+    paths: Any,
+    settings: dict[str, Any],
+    work_dir: str,
+    max_rounds: int,
+    model_cfg_id: Optional[str] = None,
+    log_cb: Optional[Any] = None,
+) -> dict[str, Any]:
     script = paths.skills_dir / "material-classifier" / "classify_materials.py"
     report_path = Path(work_dir) / "classification_report.json"
     if report_path.exists():
         report_path.unlink()
+    model_config = resolve_model_config(settings, model_cfg_id)
     env = {
         **os.environ,
-        "DASHSCOPE_API_KEY": settings["api_key"],
-        "CLASSIFY_MODEL_NAME": settings["model_name"],
+        "DASHSCOPE_API_KEY": model_config["api_key"],
+        "OPENAI_API_KEY": model_config["api_key"],
+        "OPENAI_BASE_URL": model_config["base_url"],
+        "CLASSIFY_MODEL_NAME": model_config["model"],
+        "CLASSIFY_EXTRA_PARAMS": json.dumps(model_config["params"], ensure_ascii=False),
         "CLASSIFY_GOD_PROMPT": settings["god_prompt"],
     }
     run_lines([sys.executable, str(script), work_dir, str(max_rounds)], env, work_dir, log_cb)
@@ -909,14 +1163,26 @@ def validate_classify_workspace(paths: Any, work_dir: str) -> dict[str, Any]:
     }
 
 
-def run_test_classify(paths: Any, settings: dict[str, Any], work_dir: str, prompt_type: str, prompt_content: str, log_cb: Optional[Any] = None) -> dict[str, Any]:
+def run_test_classify(
+    paths: Any,
+    settings: dict[str, Any],
+    work_dir: str,
+    prompt_type: str,
+    prompt_content: str,
+    model_cfg_id: Optional[str] = None,
+    log_cb: Optional[Any] = None,
+) -> dict[str, Any]:
     script = paths.skills_dir / "material-classifier" / "classify_materials.py"
     prompt_path = Path(work_dir) / f".test_prompt_{prompt_type}.txt"
     prompt_path.write_text(prompt_content, encoding="utf-8")
+    model_config = resolve_model_config(settings, model_cfg_id)
     env = {
         **os.environ,
-        "DASHSCOPE_API_KEY": settings["api_key"],
-        "CLASSIFY_MODEL_NAME": settings["model_name"],
+        "DASHSCOPE_API_KEY": model_config["api_key"],
+        "OPENAI_API_KEY": model_config["api_key"],
+        "OPENAI_BASE_URL": model_config["base_url"],
+        "CLASSIFY_MODEL_NAME": model_config["model"],
+        "CLASSIFY_EXTRA_PARAMS": json.dumps(model_config["params"], ensure_ascii=False),
     }
     try:
         lines = run_lines([sys.executable, str(script), f"--test-prompt={prompt_type}", f"--prompt-file={prompt_path}", work_dir], env, work_dir, log_cb)
@@ -937,14 +1203,16 @@ def run_review_rule(
     api_key: Optional[str] = None,
     base_url: Optional[str] = None,
     model: Optional[str] = None,
+    model_cfg_id: Optional[str] = None,
     materials: Optional[list[str]] = None,
 ) -> list[dict[str, Any]]:
     script = paths.skills_dir / "review-rule-generator" / "generate_review_rule.py"
     cmd = [sys.executable, str(script), work_dir]
+    model_config = resolve_model_config(settings, model_cfg_id)
     if use_llm:
-        resolved_api_key = api_key if api_key is not None else settings["api_key"]
-        resolved_base_url = base_url or "https://dashscope.aliyuncs.com/compatible-mode/v1"
-        resolved_model = model or settings["model_name"]
+        resolved_api_key = model_config["api_key"] if model_cfg_id else (api_key if api_key is not None else model_config["api_key"])
+        resolved_base_url = model_config["base_url"] if model_cfg_id else (base_url or model_config["base_url"])
+        resolved_model = model_config["model"] if model_cfg_id else (model or model_config["model"])
         resolved_timeout = str(settings.get("llm_timeout", 120))
         cmd.extend([
             "--use-llm",
@@ -962,6 +1230,7 @@ def run_review_rule(
     env = os.environ.copy()
     env["AUTO_PROMPT_API_URL"] = f"http://127.0.0.1:{os.environ.get('PORT', '18765')}"
     env["AUTO_PROMPT_API_TOKEN"] = settings.get("api_token", "")
+    env["GENERATE_EXTRA_PARAMS"] = json.dumps(model_config["params"], ensure_ascii=False)
     lines = run_lines(cmd, env, None, log_cb)
     for line in lines:
         if line.startswith("RESULTS_JSON:"):
@@ -1162,7 +1431,8 @@ async def login(body: LoginRequest, request: Request):
     user = request.app.state.auth.authenticate(body.username, body.password)
     if user is None:
         fail(401, "invalid username or password")
-    return {"token": request.app.state.auth.create_session(user), "user": user_to_json(user)}
+    session = request.app.state.auth.create_session(user, remember_me=body.rememberMe)
+    return {"token": session["token"], "expiresAt": session["expires_at"], "user": user_to_json(user)}
 
 
 @app.get("/api/auth/me")
@@ -1243,6 +1513,22 @@ async def test_key(payload: dict[str, Any], request: Request, admin: Any = Depen
     except ValueError as exc:
         fail(400, str(exc))
     return {"ok": True}
+
+
+@app.post("/api/settings/test-model")
+async def test_model(payload: dict[str, Any], request: Request, admin: Any = Depends(current_admin)):
+    settings = request.app.state.ui_settings.load_front()
+    try:
+        result = test_model_connection(
+            payload.get("model") or {},
+            fallback_api_key=payload.get("fallbackApiKey") or settings.get("api_key", ""),
+            timeout=int(payload.get("timeout") or settings.get("llm_timeout", 30)),
+        )
+    except ValueError as exc:
+        fail(400, str(exc))
+    except Exception as exc:
+        fail(400, str(exc))
+    return result
 
 
 @app.post("/api/workspaces")
@@ -1377,14 +1663,16 @@ async def generate_prompt(payload: dict[str, Any], request: Request, user: Any =
     real_work_dir = _resolve_user_work_dir(paths, payload["workDir"], user.id)
     llm_logs = request.app.state.llm_logs
     start = time.time()
+    model_cfg_id = payload.get("modelCfgId")
+    model_id = resolve_model_id(settings, model_cfg_id)
     try:
-        data = run_generate_prompt(paths, settings, real_work_dir, payload.get("materialName"))
-        llm_logs.add(scene="提示词生成", model=settings["model_name"],
+        data = run_generate_prompt(paths, settings, real_work_dir, payload.get("materialName"), model_cfg_id=model_cfg_id)
+        llm_logs.add(scene="提示词生成", model=model_id,
                      prompt_summary=f"材料: {payload.get('materialName', '全部')}", 
                      response_summary=data.get("prompt_template", "")[:500],
                      success=True, elapsed_s=time.time() - start)
     except ValueError as exc:
-        llm_logs.add(scene="提示词生成", model=settings["model_name"],
+        llm_logs.add(scene="提示词生成", model=model_id,
                      prompt_summary=f"材料: {payload.get('materialName', '全部')}",
                      error=str(exc), success=False, elapsed_s=time.time() - start)
         fail(400, str(exc))
@@ -1409,8 +1697,10 @@ async def generate_verify(payload: dict[str, Any], request: Request, user: Any =
     material_dir = Path(payload["materialDir"])
     prompt_text = payload.get("promptText", "")
     model_cfg_id = payload.get("modelCfgId")
-    model_id = resolve_model_id(settings, model_cfg_id)
-    result = run_verify_extraction(material_dir, prompt_text, model_id, settings["api_key"],
+    model_config = resolve_model_config(settings, model_cfg_id)
+    result = run_verify_extraction(material_dir, prompt_text, model_config["model"], model_config["api_key"],
+                                   base_url=model_config["base_url"],
+                                   extra_params=model_config["params"],
                                    llm_logs=request.app.state.llm_logs)
     if not result["success"]:
         fail(400, result["error"])
@@ -1518,8 +1808,10 @@ async def start_task(kind: str, payload: dict[str, Any], request: Request, user:
             real_work_dir = _resolve_user_work_dir(paths, payload.get("workDir", ""), user.id)
             if kind == "generate":
                 t0 = time.time()
-                result = run_generate_prompt(paths, settings, real_work_dir, payload.get("materialName"))
-                llm_logs.add(scene="提示词生成", model=settings["model_name"],
+                model_cfg_id = payload.get("modelCfgId")
+                model_id = resolve_model_id(settings, model_cfg_id)
+                result = run_generate_prompt(paths, settings, real_work_dir, payload.get("materialName"), model_cfg_id=model_cfg_id)
+                llm_logs.add(scene="提示词生成", model=model_id,
                              prompt_summary=f"材料: {payload.get('materialName', '全部')}",
                              response_summary=result.get("prompt_template", "")[:500],
                              success=True, elapsed_s=time.time() - t0)
@@ -1528,20 +1820,39 @@ async def start_task(kind: str, payload: dict[str, Any], request: Request, user:
                 material_dir = Path(payload["materialDir"])
                 prompt_text = payload.get("promptText", "")
                 model_cfg_id = payload.get("modelCfgId")
-                model_id = resolve_model_id(settings, model_cfg_id)
-                result = run_verify_extraction(material_dir, prompt_text, model_id, settings["api_key"],
+                model_config = resolve_model_config(settings, model_cfg_id)
+                result = run_verify_extraction(material_dir, prompt_text, model_config["model"], model_config["api_key"],
+                                               base_url=model_config["base_url"],
+                                               extra_params=model_config["params"],
                                                llm_logs=llm_logs)
                 request.app.state.tasks.complete(task.id, result)
             elif kind == "classify":
                 t0 = time.time()
-                result = run_classify(paths, settings, real_work_dir, int(payload.get("maxRounds") or 2), lambda line: request.app.state.tasks.append_log(task.id, line))
-                llm_logs.add(scene="材料分类", model=settings["model_name"],
+                model_cfg_id = payload.get("modelCfgId")
+                model_id = resolve_model_id(settings, model_cfg_id)
+                result = run_classify(
+                    paths,
+                    settings,
+                    real_work_dir,
+                    int(payload.get("maxRounds") or 2),
+                    model_cfg_id=model_cfg_id,
+                    log_cb=lambda line: request.app.state.tasks.append_log(task.id, line),
+                )
+                llm_logs.add(scene="材料分类", model=model_id,
                              prompt_summary=f"工作目录: {Path(real_work_dir).name}",
                              response_summary=json.dumps(result, ensure_ascii=False)[:500] if result else "",
                              success=True, elapsed_s=time.time() - t0)
                 request.app.state.tasks.complete(task.id, result)
             elif kind == "test-classify-prompt":
-                result = run_test_classify(paths, settings, real_work_dir, payload["promptType"], payload["promptContent"], lambda line: request.app.state.tasks.append_log(task.id, line))
+                result = run_test_classify(
+                    paths,
+                    settings,
+                    real_work_dir,
+                    payload["promptType"],
+                    payload["promptContent"],
+                    model_cfg_id=payload.get("modelCfgId"),
+                    log_cb=lambda line: request.app.state.tasks.append_log(task.id, line),
+                )
                 request.app.state.tasks.complete(task.id, result)
             elif kind == "factor-json":
                 fj_group_size = int(payload.get("groupSize") or 4)
@@ -1559,9 +1870,10 @@ async def start_task(kind: str, payload: dict[str, Any], request: Request, user:
                     api_key=payload.get("apiKey"),
                     base_url=payload.get("baseUrl"),
                     model=payload.get("model"),
+                    model_cfg_id=payload.get("modelCfgId"),
                     materials=payload.get("materials") or None,
                 )
-                llm_logs.add(scene="审查规则生成", model=payload.get("model") or settings["model_name"],
+                llm_logs.add(scene="审查规则生成", model=payload.get("model") or resolve_model_id(settings, payload.get("modelCfgId")),
                              prompt_summary=f"工作目录: {Path(real_work_dir).name}, useLlm={payload.get('useLlm')}",
                              response_summary=json.dumps(result, ensure_ascii=False)[:500] if result else "",
                              success=True, elapsed_s=time.time() - t0)

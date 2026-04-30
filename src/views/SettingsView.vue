@@ -48,7 +48,7 @@
       <!-- Tab 1: API 配置 -->
       <div v-show="activeTab === 'api'" class="space-y-4">
         <div class="bg-white rounded-xl shadow-sm border p-5">
-          <h2 class="text-base font-semibold text-gray-800 mb-4">通义千问 API 配置</h2>
+          <h2 class="text-base font-semibold text-gray-800 mb-4">OpenAI 兼容 API 配置</h2>
           <div class="space-y-4">
             <div>
               <label class="block text-sm font-medium text-gray-700 mb-2">API Key</label>
@@ -56,7 +56,7 @@
                 <input
                   :type="showKey ? 'text' : 'password'"
                   v-model="apiKey"
-                  placeholder="请输入通义千问API密钥"
+                  placeholder="请输入默认 API Key（可选）"
                   autocomplete="off"
                   autocapitalize="off"
                   autocorrect="off"
@@ -83,8 +83,7 @@
                 </button>
               </div>
               <p class="mt-2 text-sm text-gray-500">
-                用于调用通义千问AI生成提示词。
-                <a href="https://dashscope.aliyuncs.com" target="_blank" class="text-blue-600 hover:underline">获取API密钥</a>
+                作为默认 API Key 使用；当模型配置中未单独填写 `api_key` 时会自动回退到这里。
               </p>
               <p
                 class="mt-2 text-xs"
@@ -109,7 +108,7 @@
             </svg>
             <label class="text-sm font-medium text-amber-700 flex-shrink-0">生成默认使用</label>
             <select v-model="defaultModelId" class="flex-1 px-3 py-2 border border-amber-200 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-amber-300">
-              <option v-for="m in models" :key="m.id" :value="m.id">{{ m.name }} ({{ m.model_id }})</option>
+              <option v-for="m in models" :key="m.id" :value="m.id">{{ m.name }} ({{ m.model }})</option>
             </select>
           </div>
         </div>
@@ -160,12 +159,15 @@
                     {{ m.name }}
                     <span v-if="defaultModelId === m.id" class="text-xs text-amber-600 bg-amber-50 border border-amber-200 rounded px-1.5">默认</span>
                   </div>
-                  <div class="text-xs text-gray-400 truncate font-mono">{{ m.model_id }}</div>
+                  <div class="text-xs text-gray-400 truncate font-mono">{{ m.model }}</div>
+                  <div class="text-[11px] text-gray-400 truncate">{{ m.base_url }}</div>
                 </div>
                 <!-- 编辑态 -->
-                <div class="flex-1 min-w-0 flex gap-2" v-else>
+                <div class="flex-1 min-w-0 grid gap-2 lg:grid-cols-4" v-else>
                   <input v-model="editBuf.name" placeholder="显示名称" class="flex-1 px-2 py-1 border rounded text-sm" />
-                  <input v-model="editBuf.model_id" placeholder="model_id" class="flex-1 px-2 py-1 border rounded text-sm font-mono" />
+                  <input v-model="editBuf.model" placeholder="model" class="flex-1 px-2 py-1 border rounded text-sm font-mono" />
+                  <input v-model="editBuf.base_url" placeholder="base_url" class="flex-1 px-2 py-1 border rounded text-sm font-mono" />
+                  <input v-model="editBuf.api_key" placeholder="api_key（留空则使用默认）" class="flex-1 px-2 py-1 border rounded text-sm font-mono" />
                   <select v-model="editBuf.type" class="px-2 py-1 border rounded text-sm">
                     <option value="vl">VL</option>
                     <option value="text">文本</option>
@@ -174,6 +176,17 @@
                 <!-- 操作按钮 -->
                 <div class="flex gap-1.5 flex-shrink-0">
                   <template v-if="editingIdx !== idx">
+                    <button
+                      @click="testModel(idx)"
+                      :disabled="Boolean(modelTestStates[m.id]?.loading)"
+                      class="px-2.5 py-1 text-xs rounded transition"
+                      :class="modelTestStates[m.id]?.type === 'success'
+                        ? 'bg-green-100 text-green-700 hover:bg-green-200'
+                        : modelTestStates[m.id]?.type === 'error'
+                          ? 'bg-red-100 text-red-700 hover:bg-red-200'
+                          : 'bg-blue-100 text-blue-700 hover:bg-blue-200'">
+                      {{ modelTestStates[m.id]?.loading ? '测试中...' : '测试' }}
+                    </button>
                     <button @click="startEdit(idx)" class="px-2.5 py-1 text-xs bg-gray-200 text-gray-600 rounded hover:bg-gray-300">编辑</button>
                     <button v-if="deleteConfirmIdx !== idx" @click="deleteConfirmIdx = idx"
                       class="px-2.5 py-1 text-xs bg-red-100 text-red-600 rounded hover:bg-red-200">删除</button>
@@ -184,10 +197,32 @@
                     </template>
                   </template>
                   <template v-else>
+                    <button
+                      @click="testModel(idx)"
+                      :disabled="Boolean(modelTestStates[m.id]?.loading)"
+                      class="px-2.5 py-1 text-xs rounded transition"
+                      :class="modelTestStates[m.id]?.type === 'success'
+                        ? 'bg-green-100 text-green-700 hover:bg-green-200'
+                        : modelTestStates[m.id]?.type === 'error'
+                          ? 'bg-red-100 text-red-700 hover:bg-red-200'
+                          : 'bg-blue-100 text-blue-700 hover:bg-blue-200'">
+                      {{ modelTestStates[m.id]?.loading ? '测试中...' : '测试' }}
+                    </button>
                     <button @click="confirmEdit(idx)" class="px-2.5 py-1 text-xs bg-blue-600 text-white rounded hover:bg-blue-700">保存</button>
                     <button @click="cancelEdit" class="px-2.5 py-1 text-xs bg-gray-200 text-gray-600 rounded hover:bg-gray-300">取消</button>
                   </template>
                 </div>
+              </div>
+              <div
+                v-if="modelTestStates[m.id]"
+                class="border-t px-4 py-2 text-xs flex items-center justify-between gap-3"
+                :class="modelTestStates[m.id]?.type === 'success'
+                  ? 'bg-green-50 text-green-700 border-green-100'
+                  : modelTestStates[m.id]?.type === 'error'
+                    ? 'bg-red-50 text-red-700 border-red-100'
+                    : 'bg-blue-50 text-blue-700 border-blue-100'">
+                <span class="truncate">{{ modelTestStates[m.id]?.message }}</span>
+                <button @click="clearModelTestState(m.id)" class="text-gray-400 hover:text-gray-600 flex-shrink-0">清除</button>
               </div>
               <!-- 参数编辑区 -->
               <div v-if="editingIdx === idx" class="border-t px-4 py-3 bg-white rounded-b-lg">
@@ -292,6 +327,9 @@ import { computed, ref, onMounted, onActivated } from 'vue'
 import { invoke } from '../tauri/tauri.js'
 import { getApiKeySaveState } from './settingsState.js'
 
+const OPENAI_COMPAT_BASE_URL = 'https://api.openai.com/v1'
+const DASHSCOPE_COMPAT_BASE_URL = 'https://dashscope.aliyuncs.com/compatible-mode/v1'
+
 const apiKey = ref('')
 const savedApiKey = ref('')
 const apiKeyConfigured = ref(false)
@@ -319,12 +357,25 @@ const extractGodPrompt = ref('')
 const llmTimeout = ref(120)
 const defaultGodPrompts = ref({ classify: '', extract: '' })
 const editingIdx = ref(-1)
-const editBuf = ref({ name: '', model_id: '', type: 'vl', params: [] })
+const editBuf = ref({ name: '', model: '', base_url: OPENAI_COMPAT_BASE_URL, api_key: '', type: 'vl', params: [] })
+const modelTestStates = ref({})
 const apiKeySaveState = computed(() => getApiKeySaveState({
   apiKey: apiKey.value,
   savedApiKey: savedApiKey.value,
   apiKeyConfigured: apiKeyConfigured.value
 }))
+
+function normalizeModel(model) {
+  const legacyStyle = Object.prototype.hasOwnProperty.call(model || {}, 'model_id') || !model?.base_url
+  return {
+    ...model,
+    model: model?.model || model?.model_id || '',
+    base_url: model?.base_url || (legacyStyle ? DASHSCOPE_COMPAT_BASE_URL : OPENAI_COMPAT_BASE_URL),
+    api_key: model?.api_key || '',
+    type: model?.type || 'vl',
+    params: model?.params || []
+  }
+}
 
 function paramToEditItem(p) {
   if (typeof p.value === 'boolean') {
@@ -350,7 +401,9 @@ function startEdit(idx) {
   const m = models.value[idx]
   editBuf.value = {
     name: m.name,
-    model_id: m.model_id,
+    model: m.model,
+    base_url: m.base_url || OPENAI_COMPAT_BASE_URL,
+    api_key: m.api_key || '',
     type: m.type,
     params: (m.params || []).map(paramToEditItem)
   }
@@ -360,7 +413,9 @@ function confirmEdit(idx) {
   models.value[idx] = {
     ...models.value[idx],
     name: editBuf.value.name,
-    model_id: editBuf.value.model_id,
+    model: editBuf.value.model,
+    base_url: editBuf.value.base_url,
+    api_key: editBuf.value.api_key,
     type: editBuf.value.type,
     params: editBuf.value.params.filter(p => p.key.trim()).map(editItemToParam)
   }
@@ -368,7 +423,7 @@ function confirmEdit(idx) {
 }
 function addModel() {
   const newId = String(Date.now())
-  models.value.unshift({ id: newId, name: '新模型', model_id: '', type: 'vl', params: [] })
+  models.value.unshift({ id: newId, name: '新模型', model: '', base_url: OPENAI_COMPAT_BASE_URL, api_key: '', type: 'vl', params: [] })
   startEdit(0)
 }
 function deleteModel(idx) {
@@ -391,15 +446,70 @@ function onParamTypeChange(p) {
   else p.strVal = ''
 }
 
+function clearModelTestState(modelId) {
+  const next = { ...modelTestStates.value }
+  delete next[modelId]
+  modelTestStates.value = next
+}
+
+function buildModelPayloadForTest(idx) {
+  const current = models.value[idx]
+  if (!current) return null
+  if (editingIdx.value === idx) {
+    return normalizeModel({
+      ...current,
+      name: editBuf.value.name,
+      model: editBuf.value.model,
+      base_url: editBuf.value.base_url,
+      api_key: editBuf.value.api_key,
+      type: editBuf.value.type,
+      params: editBuf.value.params.filter(p => p.key.trim()).map(editItemToParam)
+    })
+  }
+  return normalizeModel(current)
+}
+
+async function testModel(idx) {
+  const current = models.value[idx]
+  if (!current) return
+  const modelId = current.id
+  const payload = buildModelPayloadForTest(idx)
+  modelTestStates.value = {
+    ...modelTestStates.value,
+    [modelId]: { loading: true, type: 'loading', message: '正在测试模型连接...' }
+  }
+  try {
+    const result = await invoke('test_model_config', {
+      model: payload,
+      fallbackApiKey: apiKey.value,
+      timeout: llmTimeout.value
+    })
+    const detail = [
+      result.model ? `模型: ${result.model}` : '',
+      Number.isFinite(result.elapsed_s) ? `${result.elapsed_s}s` : '',
+      result.preview ? `返回: ${result.preview}` : ''
+    ].filter(Boolean).join(' · ')
+    modelTestStates.value = {
+      ...modelTestStates.value,
+      [modelId]: { loading: false, type: 'success', message: detail || '连接成功' }
+    }
+  } catch (error) {
+    modelTestStates.value = {
+      ...modelTestStates.value,
+      [modelId]: { loading: false, type: 'error', message: `测试失败: ${String(error)}` }
+    }
+  }
+}
+
 let saveStatusTimer = null
 let testStatusTimer = null
 
 const DEFAULT_MODELS = [
-  { id: '1', name: 'Qwen VL Max', model_id: 'qwen-vl-max', type: 'vl', params: [] },
-  { id: '2', name: 'Qwen VL Plus', model_id: 'qwen-vl-plus', type: 'vl', params: [] },
-  { id: '3', name: 'Qwen2.5 VL 72B', model_id: 'qwen2.5-vl-72b-instruct', type: 'vl', params: [] },
-  { id: '4', name: 'Qwen Plus (文本)', model_id: 'qwen-plus', type: 'text', params: [] },
-  { id: '5', name: 'Qwen Max (文本)', model_id: 'qwen-max', type: 'text', params: [] },
+  { id: '1', name: 'Qwen VL Max', model: 'qwen-vl-max', base_url: DASHSCOPE_COMPAT_BASE_URL, api_key: '', type: 'vl', params: [] },
+  { id: '2', name: 'Qwen VL Plus', model: 'qwen-vl-plus', base_url: DASHSCOPE_COMPAT_BASE_URL, api_key: '', type: 'vl', params: [] },
+  { id: '3', name: 'Qwen2.5 VL 72B', model: 'qwen2.5-vl-72b-instruct', base_url: DASHSCOPE_COMPAT_BASE_URL, api_key: '', type: 'vl', params: [] },
+  { id: '4', name: 'Qwen Plus (文本)', model: 'qwen-plus', base_url: DASHSCOPE_COMPAT_BASE_URL, api_key: '', type: 'text', params: [] },
+  { id: '5', name: 'Qwen Max (文本)', model: 'qwen-max', base_url: DASHSCOPE_COMPAT_BASE_URL, api_key: '', type: 'text', params: [] },
 ]
 
 async function loadSettings() {
@@ -410,7 +520,7 @@ async function loadSettings() {
     apiKeyConfigured.value = Boolean(settings.api_key_configured)
     modelName.value = settings.model_name || 'qwen-vl-max'
     models.value = (settings.models && settings.models.length > 0)
-      ? settings.models.map(m => ({ ...m, type: m.type || 'vl', params: m.params || [] }))
+      ? settings.models.map(normalizeModel)
       : DEFAULT_MODELS
     defaultModelId.value = settings.default_model_id || (models.value[0]?.id ?? '')
     godPrompt.value = settings.god_prompt || ''
@@ -442,7 +552,7 @@ async function saveSettings() {
     const selectedDefaultModel = models.value.find(m => m.id === defaultModelId.value)
     await invoke('save_settings', { settings: {
       api_key: apiKey.value,
-      model_name: selectedDefaultModel?.model_id || modelName.value,
+      model_name: selectedDefaultModel?.model || modelName.value,
       default_model_id: defaultModelId.value,
       models: models.value,
       god_prompt: godPrompt.value,
@@ -450,7 +560,7 @@ async function saveSettings() {
       llm_timeout: llmTimeout.value
     }})
     savedApiKey.value = apiKey.value
-    apiKeyConfigured.value = Boolean(apiKey.value)
+    apiKeyConfigured.value = Boolean(apiKey.value || models.value.some(model => model.api_key && model.api_key.trim()))
     saveStatus.value = { type: 'success', message: '✓ 已保存' }
   } catch (error) {
     saveStatus.value = { type: 'error', message: `保存失败: ${error}` }

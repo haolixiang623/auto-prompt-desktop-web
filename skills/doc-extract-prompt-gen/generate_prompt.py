@@ -4,7 +4,6 @@ import base64
 import json
 import re
 from pathlib import Path
-from datetime import datetime
 
 try:
     from openpyxl import load_workbook
@@ -245,199 +244,6 @@ def lookup_cases_from_db(factors, item_name, material_name):
     return matched
 
 
-def load_case_library():
-    """加载案例库（从 skill 目录）"""
-    skill_dir = get_skill_dir()
-    case_lib_path = os.path.join(skill_dir, 'case_library.json')
-    
-    print(f"[案例库] 从 {case_lib_path} 加载")
-    
-    if not os.path.exists(case_lib_path):
-        print("\n[提示] 未找到案例库文件，将创建新的案例库")
-        return {"version": "1.0", "cases": []}
-    
-    try:
-        with open(case_lib_path, 'r', encoding='utf-8') as f:
-            return json.load(f)
-    except Exception as e:
-        print(f"\n[警告] 案例库加载失败: {e}，将使用空案例库")
-        return {"version": "1.0", "cases": []}
-
-def save_case_library(case_lib):
-    """保存案例库（到 skill 目录）"""
-    skill_dir = get_skill_dir()
-    case_lib_path = os.path.join(skill_dir, 'case_library.json')
-    
-    try:
-        with open(case_lib_path, 'w', encoding='utf-8') as f:
-            json.dump(case_lib, f, ensure_ascii=False, indent=2)
-        return True
-    except Exception as e:
-        print(f"\n[错误] 案例库保存失败: {e}")
-        return False
-
-def match_cases_with_qwen(client, factors, case_lib, material_name=None):
-    """使用 Qwen 智能匹配案例库中的相似案例
-    
-    Args:
-        client: Qwen API 客户端
-        factors: 要素列表
-        case_lib: 案例库
-        material_name: 材料名称，用于过滤案例（可选）
-    """
-    print("\n[案例库] 正在分析要素并匹配案例库...")
-    
-    if not case_lib.get('cases'):
-        print("[案例库] 案例库为空，跳过匹配")
-        return {}
-    
-    # 根据材料名称过滤案例
-    filtered_cases = case_lib['cases']
-    if material_name:
-        filtered_cases = [c for c in case_lib['cases'] if c.get('material_name') == material_name]
-        print(f"[案例库] 按材料名称 '{material_name}' 过滤，找到 {len(filtered_cases)} 个相关案例")
-        
-        # 如果没有匹配的案例，尝试使用通用案例
-        if not filtered_cases:
-            filtered_cases = [c for c in case_lib['cases'] if c.get('material_name') == '通用']
-            if filtered_cases:
-                print(f"[案例库] 未找到专属案例，使用 {len(filtered_cases)} 个通用案例")
-            else:
-                print("[案例库] 未找到匹配的案例，跳过匹配")
-                return {}
-    
-    # 构建要素描述
-    factor_descriptions = []
-    for factor in factors:
-        desc = f"- {factor['name']}"
-        if factor['extract_desc']:
-            desc += f": {factor['extract_desc']}"
-        if factor['rule_desc']:
-            desc += f" ({factor['rule_desc']})"
-        factor_descriptions.append(desc)
-    
-    # 构建案例库描述（包含提取规则和材料名称）
-    case_descriptions = []
-    for i, case in enumerate(filtered_cases):
-        case_desc = f"{i}. [{case.get('material_name', '通用')}] {case['factor_name']}\n"
-        case_desc += f"   提取规则: {case.get('extraction_rule', '')[:100]}..."  # 显示前100字符
-        if case.get('extract_desc'):
-            case_desc += f"\n   提取说明: {case['extract_desc']}"
-        if case.get('rule_desc'):
-            case_desc += f"\n   规则说明: {case['rule_desc']}"
-        case_descriptions.append(case_desc)
-    
-    match_prompt = f"""请分析以下要素列表，并从案例库中找出最匹配的案例。
-
-当前要素列表：
-{chr(10).join(factor_descriptions)}
-
-案例库（包含提取规则）：
-{chr(10).join(case_descriptions)}
-
-请为每个要素找出最匹配的案例编号（如果有的话）。匹配标准（按优先级排序）：
-1. **要素名称**相同或高度相似（语义匹配）
-2. **提取规则**语义相近或描述同一类提取任务
-3. 提取说明和规则说明语义相近
-4. 如果要素名称和提取规则都不相似，返回 -1
-
-**重要**：只有当要素名称或提取规则高度相似时才匹配，避免错误匹配。
-
-请以JSON格式返回：
-{{
-  "matches": [
-    {{"factor_name": "要素名称", "case_index": 0, "confidence": "high/medium/low"}}
-  ]
-}}"""
-    
-    extra = get_extra_params()
-    try:
-        response = client.chat.completions.create(
-            model=get_text_model(),
-            messages=[{"role": "user", "content": match_prompt}],
-            **extra
-        )
-        result = response.choices[0].message.content
-        
-        # 提取JSON
-        if "```json" in result:
-            result = result.split("```json")[1].split("```")[0].strip()
-        elif "```" in result:
-            result = result.split("```")[1].split("```")[0].strip()
-        
-        matches_data = json.loads(result)
-        
-        # 构建匹配字典（只接受高置信度匹配）
-        matched_cases = {}
-        for match in matches_data.get('matches', []):
-            case_idx = match.get('case_index', -1)
-            confidence = match.get('confidence', 'low')
-            
-            if case_idx >= 0 and case_idx < len(filtered_cases):
-                factor_name = match.get('factor_name')
-                case = filtered_cases[case_idx]
-                
-                # 只接受高置信度或中等置信度的匹配
-                if confidence in ['high', 'medium']:
-                    matched_cases[factor_name] = case
-                    material_tag = f"[{case.get('material_name', '通用')}]"
-                    print(f"[案例库] ✓ '{factor_name}' 匹配到 {material_tag} '{case['factor_name']}' (置信度: {confidence})")
-                else:
-                    print(f"[案例库] ✗ '{factor_name}' 匹配置信度过低 ({confidence})，将使用AI生成")
-        
-        return matched_cases
-    except Exception as e:
-        print(f"\n[警告] 案例库匹配失败: {e}，将使用AI生成")
-        return {}
-
-def add_cases_to_library(case_lib, factors_with_rules, material_name=None, source="ai_generated"):
-    """将验证通过的规则添加到案例库
-    
-    Args:
-        case_lib: 案例库
-        factors_with_rules: 要素规则列表
-        material_name: 材料名称（可选）
-        source: 来源标记
-    """
-    print("\n[案例库] 正在保存新规则到案例库...")
-    
-    added_count = 0
-    for factor in factors_with_rules:
-        # 检查是否已存在完全相同的案例（基于材料名称+要素名称）
-        exists = False
-        for case in case_lib['cases']:
-            if (case.get('material_name') == material_name and
-                case['factor_name'] == factor['name'] and 
-                case.get('extract_desc') == factor.get('extract_desc', '') and
-                case.get('rule_desc') == factor.get('rule_desc', '')):
-                exists = True
-                break
-        
-        if not exists:
-            new_case = {
-                "material_name": material_name or "通用",
-                "factor_name": factor['name'],
-                "extract_desc": factor.get('extract_desc', ''),
-                "rule_desc": factor.get('rule_desc', ''),
-                "extraction_rule": factor['rule'],
-                "format_requirement": factor['format'],
-                "source": source,
-                "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                "tags": []
-            }
-            case_lib['cases'].append(new_case)
-            added_count += 1
-            material_tag = f"[{material_name}]" if material_name else "[通用]"
-            print(f"[案例库] ✓ 已添加: {material_tag} {factor['name']} (来源: {source})")
-    
-    if added_count > 0:
-        if save_case_library(case_lib):
-            print(f"[案例库] ✓ 成功保存 {added_count} 个新案例到案例库")
-        else:
-            print(f"[案例库] ✗ 保存失败")
-    else:
-        print("[案例库] 所有规则已存在于案例库中")
-
 def generate_factors_text(factors):
     lines = []
     for f in factors:
@@ -522,9 +328,11 @@ def get_vl_model():
     """获取视觉语言模型名称"""
     return os.environ.get("MODEL_NAME", "qwen-vl-max")
 
-def get_text_model():
-    """获取纯文本模型名称（用于非图片的文本推理任务）"""
-    return os.environ.get("TEXT_MODEL_NAME", os.environ.get("MODEL_NAME", "qwen-vl-max"))
+def get_openai_api_key():
+    return os.environ.get("OPENAI_API_KEY") or os.environ.get("DASHSCOPE_API_KEY")
+
+def get_openai_base_url():
+    return os.environ.get("OPENAI_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1")
 
 def get_qwen_client():
     """获取 Qwen API 客户端"""
@@ -534,16 +342,16 @@ def get_qwen_client():
         print("\n[错误] 缺少 openai 库，请执行: pip install openai")
         return None
 
-    api_key = os.environ.get("DASHSCOPE_API_KEY")
+    api_key = get_openai_api_key()
     if not api_key:
-        print("\n[错误] 未检测到 DASHSCOPE_API_KEY 环境变量")
-        print("请设置环境变量: export DASHSCOPE_API_KEY='your-api-key'")
+        print("\n[错误] 未检测到 OPENAI_API_KEY（兼容 DASHSCOPE_API_KEY）环境变量")
+        print("请设置环境变量: export OPENAI_API_KEY='your-api-key'")
         return None
     
     timeout_val = get_llm_timeout()
     return OpenAI(
         api_key=api_key,
-        base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+        base_url=get_openai_base_url(),
         timeout=float(timeout_val),
     )
 
@@ -892,7 +700,7 @@ def main():
         if db_matched:
             print(f"\n✓ 提示词库精确命中 {len(db_matched)} 个要素，剩余 {len(remaining_factors)} 个需进一步处理")
         
-        # 4. 对未命中的要素，走原有的案例库 + AI 生成流程
+        # 4. 对未命中的要素，直接走 AI 生成流程
         if not remaining_factors:
             # 全部命中，跳过图片分析和 AI 生成
             need_ai_generation = []
@@ -910,31 +718,7 @@ def main():
             client = get_qwen_client()
             if not client:
                 return 1
-            
-            # 加载案例库并尝试匹配
-            case_lib = load_case_library()
-            print(f"\n✓ 案例库已加载，共 {len(case_lib.get('cases', []))} 个案例")
-            
-            matched_cases = match_cases_with_qwen(client, remaining_factors, case_lib) if client else {}
-            
-            need_ai_generation = []
-            
-            for idx_offset, factor in enumerate(remaining_factors):
-                idx = len(factors_with_rules) + idx_offset + 1
-                if factor['name'] in matched_cases:
-                    case = matched_cases[factor['name']]
-                    factors_with_rules.append({
-                        'index': idx,
-                        'name': factor['name'],
-                        'extract_desc': factor.get('extract_desc', ''),
-                        'rule_desc': factor.get('rule_desc', ''),
-                        'rule': case['extraction_rule'],
-                        'format': case['format_requirement'],
-                        'case_matched': True,
-                    })
-                    print(f"[案例库] ✓ '{factor['name']}' 完全使用案例库规则（提取规则+格式要求）")
-                else:
-                    need_ai_generation.append(factor)
+            need_ai_generation = remaining_factors
         
         # 6. 对未匹配的要素使用AI生成规则
         if need_ai_generation:
@@ -973,12 +757,10 @@ def main():
         
         # 统计格式使用情况
         db_count = sum(1 for f in factors_with_rules if f.get('db_matched', False))
-        case_format_count = sum(1 for f in factors_with_rules if f.get('case_matched', False))
-        ai_format_count = len(factors_with_rules) - case_format_count
+        ai_format_count = len(factors_with_rules) - db_count
         
         print(f"\n✓ 共 {len(factors_with_rules)} 个提取规则准备就绪")
         print(f"  - 提示词库命中: {db_count}")
-        print(f"  - 案例库规则: {case_format_count - db_count}")
         print(f"  - AI生成规则: {ai_format_count}")
         
         # 7. 加载模板并组装提示词
@@ -992,18 +774,11 @@ def main():
         print(f"\n✓ 智能提示词已保存至: {output_path}")
         
         # 9. 最终验证（仅当有图片和客户端时验证）
-        validation_success = False
         if need_ai_generation:
             images = images if 'images' in dir() else get_images_in_dir(current_dir)
             client = client if 'client' in dir() else get_qwen_client()
             if client and images:
-                validation_success = validate_final_prompt(client, final_prompt, images)
-        
-        # 10. 如果验证成功且有AI生成的规则，保存到案例库
-        if validation_success and need_ai_generation:
-            ai_factors = [f for f in factors_with_rules if f['name'] in [nf['name'] for nf in need_ai_generation]]
-            case_lib = case_lib if 'case_lib' in dir() else load_case_library()
-            add_cases_to_library(case_lib, ai_factors, source="ai_generated")
+                validate_final_prompt(client, final_prompt, images)
         
         print("\n" + "="*60)
         print("✓ 智能提示词生成完成！")

@@ -212,7 +212,7 @@
                     </div>
                     <div class="min-w-0">
                       <div class="font-medium truncate">{{ m.name }}</div>
-                      <div class="text-gray-400 truncate">{{ m.model_id }}</div>
+                      <div class="text-gray-400 truncate">{{ m.model }}</div>
                     </div>
                   </button>
                 </div>
@@ -607,9 +607,9 @@ async function loadModels() {
   try {
     const settings = await invoke('load_settings')
     const mods = (settings.models && settings.models.length > 0) ? settings.models : [
-      { id: '1', name: 'Qwen VL Max', model_id: 'qwen-vl-max', type: 'vl' },
-      { id: '4', name: 'Qwen Plus (文本)', model_id: 'qwen-plus', type: 'text' },
-      { id: '5', name: 'Qwen Max (文本)', model_id: 'qwen-max', type: 'text' },
+      { id: '1', name: 'Qwen VL Max', model: 'qwen-vl-max', type: 'vl' },
+      { id: '4', name: 'Qwen Plus (文本)', model: 'qwen-plus', type: 'text' },
+      { id: '5', name: 'Qwen Max (文本)', model: 'qwen-max', type: 'text' },
     ]
     availableModels.value = mods
     const defaultId = settings.default_model_id || mods[0]?.id || ''
@@ -750,7 +750,7 @@ async function generate() {
   addLog('开始生成审查规则JSON...', 'info')
   addLog(`工作目录: ${workDir.value}`, 'info')
 
-  // 获取选中模型的 model_id（用于 Python --model 参数）和 api_key
+  // 获取选中模型信息，主要用于界面提示
   let modelId = null
   let apiKey = null
   let baseUrl = null
@@ -761,7 +761,7 @@ async function generate() {
       apiKey = settings.api_key || null
       baseUrl = 'https://dashscope.aliyuncs.com/compatible-mode/v1'
       const selModel = (settings.models || []).find(m => m.id === selectedModelId.value)
-      modelId = selModel?.model_id || null
+      modelId = selModel?.model || null
       addLog(`启用 LLM 推理，模型: ${modelId || '默认'}`, 'info')
     } catch (e) {
       addLog(`读取设置失败，将使用本地推断: ${e}`, 'warning')
@@ -775,6 +775,7 @@ async function generate() {
       apiKey: apiKey,
       baseUrl: baseUrl,
       model: modelId,
+      modelCfgId: selectedModelId.value || null,
     })
     results.value = res
     const successCount = res.filter(r => r.success).length
@@ -912,7 +913,7 @@ async function regenerateKeypoint(material, idx) {
     const apiKey = settings.api_key || null
     const baseUrl = 'https://dashscope.aliyuncs.com/compatible-mode/v1'
     const selModel = (settings.models || []).find(m => m.id === selectedModelId.value)
-    const modelId = selModel?.model_id || null
+    const modelId = selModel?.model || null
     const timeout = settings.llm_timeout || 120
 
     // 调用后端重新生成
@@ -924,6 +925,7 @@ async function regenerateKeypoint(material, idx) {
       apiKey: apiKey,
       baseUrl: baseUrl,
       model: modelId,
+      modelCfgId: selectedModelId.value || null,
       timeout: timeout,
     })
 

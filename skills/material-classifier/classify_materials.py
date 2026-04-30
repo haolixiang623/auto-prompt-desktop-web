@@ -67,16 +67,16 @@ def get_qwen_client():
         print("\n[错误] 缺少 openai 库，请执行: pip install openai")
         return None
 
-    api_key = os.environ.get("DASHSCOPE_API_KEY")
+    api_key = os.environ.get("OPENAI_API_KEY") or os.environ.get("DASHSCOPE_API_KEY")
     if not api_key:
-        print("\n[错误] 未检测到 DASHSCOPE_API_KEY 环境变量")
-        print("请设置环境变量: export DASHSCOPE_API_KEY='your-api-key'")
+        print("\n[错误] 未检测到 OPENAI_API_KEY（兼容 DASHSCOPE_API_KEY）环境变量")
+        print("请设置环境变量: export OPENAI_API_KEY='your-api-key'")
         return None
 
     from openai import OpenAI
     return OpenAI(
         api_key=api_key,
-        base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+        base_url=os.environ.get("OPENAI_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1"),
     )
 
 

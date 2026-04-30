@@ -703,9 +703,9 @@ async function loadModels() {
   try {
     const settings = await invoke('load_settings')
     const mods = (settings.models && settings.models.length > 0) ? settings.models : [
-      { id: '1', name: 'Qwen VL Max', model_id: 'qwen-vl-max', type: 'vl' },
-      { id: '2', name: 'Qwen VL Plus', model_id: 'qwen-vl-plus', type: 'vl' },
-      { id: '3', name: 'Qwen2.5 VL 72B', model_id: 'qwen2.5-vl-72b-instruct', type: 'vl' },
+      { id: '1', name: 'Qwen VL Max', model: 'qwen-vl-max', type: 'vl' },
+      { id: '2', name: 'Qwen VL Plus', model: 'qwen-vl-plus', type: 'vl' },
+      { id: '3', name: 'Qwen2.5 VL 72B', model: 'qwen2.5-vl-72b-instruct', type: 'vl' },
     ]
     availableModels.value = mods
     const defaultId = settings.default_model_id || mods[0]?.id || ''
@@ -883,8 +883,8 @@ async function goStep2() {
     currentStep.value = 3
   } catch (e) {
     const errStr = String(e)
-    if (errStr.includes('API Key') || errStr.includes('DASHSCOPE')) {
-      addLog('分类失败: 未配置API密钥，请前往【设置】页面配置 DASHSCOPE_API_KEY', 'error')
+    if (errStr.includes('API Key') || errStr.includes('DASHSCOPE') || errStr.includes('OPENAI_API_KEY')) {
+      addLog('分类失败: 未配置可用的 API 密钥，请前往【设置】页面配置默认 API Key 或模型专属 API Key', 'error')
     } else {
       addLog(`分类失败: ${e}`, 'error')
     }

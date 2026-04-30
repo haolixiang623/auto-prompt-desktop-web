@@ -11,7 +11,8 @@ echo "== Phase 2: Backend API integration tests =="
 python -m pytest -q \
   tests/test_workdir_resolution.py \
   tests/test_review_rule_task_route.py \
-  tests/test_classify_validation_and_download.py
+  tests/test_classify_validation_and_download.py \
+  tests/test_model_config_param_propagation.py
 
 echo "== Phase 3: Skills data regression tests =="
 python -m pytest -q \

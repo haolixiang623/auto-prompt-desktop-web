@@ -12,6 +12,7 @@ function loadAddModel() {
     'models',
     'startEdit',
     'Date',
+    'OPENAI_COMPAT_BASE_URL',
     `${match[0]}\nreturn addModel;`,
   )
 }
@@ -19,20 +20,21 @@ function loadAddModel() {
 test('addModel inserts the new model at the beginning of the list', () => {
   const models = {
     value: [
-      { id: '1', name: 'Existing A', model_id: 'a', type: 'vl', params: [] },
-      { id: '2', name: 'Existing B', model_id: 'b', type: 'text', params: [] },
+      { id: '1', name: 'Existing A', model: 'a', base_url: 'https://example-a.invalid/v1', api_key: '', type: 'vl', params: [] },
+      { id: '2', name: 'Existing B', model: 'b', base_url: 'https://example-b.invalid/v1', api_key: '', type: 'text', params: [] },
     ],
   }
 
   let editedIndex = -1
   const addModel = loadAddModel()(models, (idx) => {
     editedIndex = idx
-  }, { now: () => 123456 })
+  }, { now: () => 123456 }, 'https://api.openai.com/v1')
 
   addModel()
 
   assert.equal(models.value[0].id, '123456')
-  assert.equal(models.value[0].model_id, '')
+  assert.equal(models.value[0].model, '')
+  assert.equal(models.value[0].base_url, 'https://api.openai.com/v1')
   assert.equal(models.value[0].type, 'vl')
   assert.equal(editedIndex, 0)
   assert.deepEqual(

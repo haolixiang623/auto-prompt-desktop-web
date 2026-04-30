@@ -66,6 +66,14 @@ export async function invoke(command, args = {}) {
     return apiClient.post('/api/settings/test-key', { apiKey: args.apiKey })
   }
 
+  if (command === 'test_model_config') {
+    return apiClient.post('/api/settings/test-model', {
+      model: args.model,
+      fallbackApiKey: args.fallbackApiKey,
+      timeout: args.timeout
+    })
+  }
+
   if (command === 'get_llm_logs') {
     return apiClient.get('/api/logs', { page: args.page, pageSize: args.pageSize })
   }
