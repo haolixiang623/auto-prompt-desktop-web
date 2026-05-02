@@ -187,23 +187,28 @@ def find_factors_file(base_dir):
 
 
 # ─────────────────────────────────────────────
-# 目录管理
+# 工作区扫描
 # ─────────────────────────────────────────────
 
-def ensure_classified_dirs(base_dir, material_names):
-    """在 已分类材料/ 下为每种材料名称创建目录"""
-    classified_root = os.path.join(base_dir, '已分类材料')
-    os.makedirs(classified_root, exist_ok=True)
-    created = []
-    for name in material_names:
-        folder = os.path.join(classified_root, name)
-        if not os.path.exists(folder):
-            os.makedirs(folder)
-            created.append(name)
-            print(f"[目录] 创建: 已分类材料/{name}/")
-        else:
-            print(f"[目录] 已存在: 已分类材料/{name}/")
-    return classified_root, created
+def discover_material_sample_groups(base_dir):
+    """扫描统一工作区结构下的一级材料目录，收集全部样本附件。"""
+    groups = []
+    legacy_dirs = {'待分类材料', '待分类', '已分类材料'}
+    for name in sorted(os.listdir(base_dir)):
+        full_path = os.path.join(base_dir, name)
+        if not os.path.isdir(full_path):
+            continue
+        if name.startswith('.') or name.startswith('__') or name in legacy_dirs:
+            continue
+        files = get_images_in_dir(full_path)
+        if not files:
+            continue
+        groups.append({
+            'material_name': name,
+            'directory': full_path,
+            'files': files,
+        })
+    return groups
 
 
 # ─────────────────────────────────────────────
@@ -221,6 +226,65 @@ def load_template(template_path, skill_default_name):
         with open(skill_path, 'r', encoding='utf-8') as f:
             return f.read()
     raise FileNotFoundError(f"未找到模板: {template_path} 或 {skill_path}")
+
+
+def resolve_template_bundle(base_dir, current_name, workspace_name, skill_default_name):
+    """返回当前可编辑模板、只读基准模板，以及各自实际来源路径。"""
+    current_path = os.path.join(base_dir, current_name)
+    workspace_path = os.path.join(base_dir, workspace_name)
+    skill_path = os.path.join(get_skill_dir(), skill_default_name)
+
+    current_source = current_path if os.path.exists(current_path) and os.path.getsize(current_path) > 0 else (
+        workspace_path if os.path.exists(workspace_path) and os.path.getsize(workspace_path) > 0 else skill_path
+    )
+    template_source = workspace_path if os.path.exists(workspace_path) and os.path.getsize(workspace_path) > 0 else skill_path
+
+    current_content = load_template(current_source, skill_default_name)
+    template_content = load_template(template_source, skill_default_name)
+
+    return {
+        'current_path': current_path,
+        'current_source_path': current_source,
+        'current_content': current_content,
+        'template_path': template_source,
+        'template_content': template_content,
+    }
+
+
+def save_classify_prompt_artifact(base_dir, extract_prompt, aggregate_prompt, sample_groups, metadata):
+    artifact_path = os.path.join(base_dir, '材料分类提示词.json')
+    preview_path = os.path.join(base_dir, '材料分类完整提示词.txt')
+    artifact = {
+        'version': '1',
+        'workspace_name': os.path.basename(base_dir),
+        'template': {
+            'extract_prompt': extract_prompt,
+            'aggregate_prompt': aggregate_prompt,
+        },
+        'materials': [
+            {
+                'name': group['material_name'],
+                'sample_count': len(group['files']),
+            }
+            for group in sample_groups
+        ],
+        'meta': metadata,
+    }
+    with open(artifact_path, 'w', encoding='utf-8') as f:
+        json.dump(artifact, f, ensure_ascii=False, indent=2)
+
+    preview_content = (
+        '【分类信息提取提示词】\n'
+        f'{extract_prompt}\n\n'
+        '【分类附件归集提示词】\n'
+        f'{aggregate_prompt}\n'
+    )
+    with open(preview_path, 'w', encoding='utf-8') as f:
+        f.write(preview_content)
+
+    print(f"[产物] 已保存分类提示词 JSON: {artifact_path}")
+    print(f"[产物] 已保存分类提示词预览: {preview_path}")
+    return artifact_path, preview_path
 
 
 def save_template(path, content, use_timestamp=False):
@@ -271,7 +335,7 @@ def save_template(path, content, use_timestamp=False):
 # ─────────────────────────────────────────────
 
 def get_images_in_dir(directory):
-    valid_exts = {'.jpg', '.jpeg', '.png', '.bmp', '.pdf'}
+    valid_exts = {'.jpg', '.jpeg', '.png', '.bmp', '.gif', '.webp', '.pdf'}
     files = sorted([
         os.path.join(directory, f)
         for f in os.listdir(directory)
@@ -763,15 +827,18 @@ def main():
     print(f"[配置] 工作目录: {base_dir}")
     print(f"[配置] 最大优化轮次: {max_iterations}")
 
-    # ── 1. 校验目录结构
-    unclassified_dir = None
-    for name in ['待分类材料', '待分类']:
-        candidate = os.path.join(base_dir, name)
-        if os.path.isdir(candidate):
-            unclassified_dir = candidate
-            break
-    if not unclassified_dir:
-        print(f"[错误] 待分类材料目录不存在: {base_dir}/待分类材料 或 {base_dir}/待分类")
+    # ── 1. 扫描统一工作区结构
+    sample_groups = discover_material_sample_groups(base_dir)
+    if not sample_groups:
+        print(f"[错误] 未检测到任何材料样本目录: {base_dir}")
+        return 1
+
+    image_files = []
+    for group in sample_groups:
+        image_files.extend(group['files'])
+    image_files = sorted(image_files)
+    if not image_files:
+        print(f"[错误] 材料样本目录中未找到图片附件: {base_dir}")
         return 1
 
     # ── 2. 读取材料名称
@@ -779,27 +846,32 @@ def main():
     if not factors_path:
         print(f"[错误] 未找到 factors.csv/xlsx 文件: {base_dir}")
         return 1
-    material_names = read_material_names(factors_path)
+    material_names = [group['material_name'] for group in sample_groups]
+    factor_material_names = read_material_names(factors_path)
+    if factor_material_names and set(factor_material_names) != set(material_names):
+        print(f"[警告] factors 中的材料集合与样本目录不完全一致，将以样本目录为准: {', '.join(material_names)}")
     print(f"\n✓ 材料类别（{len(material_names)} 种）: {', '.join(material_names)}")
 
-    # ── 3. 建立已分类材料目录
-    classified_root, created = ensure_classified_dirs(base_dir, material_names)
-
-    # ── 4. 获取待分类附件列表
-    image_files = get_images_in_dir(unclassified_dir)
-    if not image_files:
-        print(f"[错误] 待分类材料目录中未找到图片附件: {unclassified_dir}")
-        return
-    print(f"\n✓ 待分类附件：{len(image_files)} 张")
+    print(f"\n✓ 样本附件：{len(image_files)} 个")
     for img in image_files:
         print(f"  - {os.path.basename(img)}")
 
     # ── 5. 加载提示词模板
-    extract_tmpl_path = os.path.join(base_dir, '分类信息提取提示词模板.txt')
-    aggregate_tmpl_path = os.path.join(base_dir, '分类附件归集提示词模板.txt')
+    extract_bundle = resolve_template_bundle(
+        base_dir,
+        '最新分类信息提取提示词.txt',
+        '分类信息提取提示词模板.txt',
+        '分类信息提取提示词模板.txt',
+    )
+    aggregate_bundle = resolve_template_bundle(
+        base_dir,
+        '最新分类附件归集提示词.txt',
+        '分类附件归集提示词模板.txt',
+        '分类附件归集提示词模板.txt',
+    )
 
-    extract_template = load_template(extract_tmpl_path, '分类信息提取提示词模板.txt')
-    aggregate_template = load_template(aggregate_tmpl_path, '分类附件归集提示词模板.txt')
+    extract_template = extract_bundle['current_content']
+    aggregate_template = aggregate_bundle['current_content']
     print(f"\n✓ 提示词模板已加载")
 
     # ── 6. 获取 Qwen 客户端
@@ -815,8 +887,8 @@ def main():
     step2_summary = None
     
     # 记录最终保存的文件路径
-    final_extract_path = extract_tmpl_path
-    final_aggregate_path = aggregate_tmpl_path
+    final_extract_path = extract_bundle['current_path']
+    final_aggregate_path = aggregate_bundle['current_path']
     iterations_run = 0
     extract_was_optimized = False
     aggregate_was_optimized = False
@@ -874,7 +946,7 @@ def main():
                     step1_attachments, None,
                     iteration, '\n'.join(s1_issues)
                 )
-                final_extract_path = save_template(extract_tmpl_path, extract_template, use_timestamp=False)
+                final_extract_path = save_template(extract_bundle['current_path'], extract_template, use_timestamp=False)
                 extract_was_optimized = True
 
             if not s2_pass:
@@ -884,20 +956,20 @@ def main():
                     step1_attachments, step2_plan,
                     iteration, '\n'.join(s2_issues)
                 )
-                final_aggregate_path = save_template(aggregate_tmpl_path, aggregate_template, use_timestamp=False)
+                final_aggregate_path = save_template(aggregate_bundle['current_path'], aggregate_template, use_timestamp=False)
                 aggregate_was_optimized = True
         else:
             print(f"\n[优化] 已达最大轮次 {max_iterations}，保存当前最优提示词")
             # 最后一轮也保存（即便未完全通过）
-            final_extract_path = save_template(extract_tmpl_path, extract_template, use_timestamp=False)
-            final_aggregate_path = save_template(aggregate_tmpl_path, aggregate_template, use_timestamp=False)
+            final_extract_path = save_template(extract_bundle['current_path'], extract_template, use_timestamp=False)
+            final_aggregate_path = save_template(aggregate_bundle['current_path'], aggregate_template, use_timestamp=False)
             extract_was_optimized = True
             aggregate_was_optimized = True
 
     # 无论是否触发优化，都将本次实际使用的提示词落盘到工作区，
     # 便于下载结果包和后续追溯。
-    final_extract_path = save_template(extract_tmpl_path, extract_template, use_timestamp=False)
-    final_aggregate_path = save_template(aggregate_tmpl_path, aggregate_template, use_timestamp=False)
+    final_extract_path = save_template(extract_bundle['current_path'], extract_template, use_timestamp=False)
+    final_aggregate_path = save_template(aggregate_bundle['current_path'], aggregate_template, use_timestamp=False)
 
     # ── 8. 输出最终优化后的提示词
     print(f"\n{'='*60}")
@@ -912,28 +984,55 @@ def main():
     print("─" * 40)
     print(aggregate_template)
 
-    # ── 9. 自动执行归集（若步骤2有结果）
-    if step2_plan:
-        print("\n[归集] 开始执行文件归集...")
-        execute_classification(step2_plan, unclassified_dir, classified_root, material_names)
-    else:
-        print("\n[警告] 步骤2未生成有效归集方案，跳过文件归集")
-        return 1
-
-    # ── 10. 保存运行报告
+    # ── 9. 保存分类提示词产物
     def _prompt_source(was_optimized, iters):
         if not was_optimized:
             return "原始模板"
         return f"AI优化（共{iters}轮）"
 
-    report = {
+    artifact_meta = {
         "run_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "base_dir": base_dir,
-        "material_names": material_names,
         "image_count": len(image_files),
         "iterations_run": iterations_run,
         "extract_prompt_source": _prompt_source(extract_was_optimized, iterations_run),
         "aggregate_prompt_source": _prompt_source(aggregate_was_optimized, iterations_run),
+    }
+    artifact_path, preview_path = save_classify_prompt_artifact(
+        base_dir,
+        extract_template,
+        aggregate_template,
+        sample_groups,
+        artifact_meta,
+    )
+
+    # ── 10. 保存运行报告
+
+    report = {
+        "run_time": artifact_meta["run_time"],
+        "base_dir": base_dir,
+        "material_names": material_names,
+        "image_count": len(image_files),
+        "iterations_run": iterations_run,
+        "extract_prompt_source": artifact_meta["extract_prompt_source"],
+        "aggregate_prompt_source": artifact_meta["aggregate_prompt_source"],
+        "sample_groups": [
+            {
+                "material_name": group["material_name"],
+                "sample_count": len(group["files"]),
+                "files": [os.path.basename(file_path) for file_path in group["files"]],
+            }
+            for group in sample_groups
+        ],
+        "artifact_file": artifact_path,
+        "preview_file": preview_path,
+        "final_extract_prompt": extract_template,
+        "final_aggregate_prompt": aggregate_template,
+        "extract_template_path": extract_bundle["template_path"],
+        "aggregate_template_path": aggregate_bundle["template_path"],
+        "extract_template_content": extract_bundle["template_content"],
+        "aggregate_template_content": aggregate_bundle["template_content"],
+        "current_extract_prompt_path": final_extract_path,
+        "current_aggregate_prompt_path": final_aggregate_path,
         "step1_result": step1_attachments,
         "step2_plan": step2_plan,
         "step2_summary": step2_summary,
@@ -947,7 +1046,8 @@ def main():
     print("✓ 材料分类完成！")
     print(f"  - 分类信息提取提示词: {final_extract_path}")
     print(f"  - 分类附件归集提示词: {final_aggregate_path}")
-    print(f"  - 已分类材料目录:     {classified_root}")
+    print(f"  - 分类提示词 JSON:     {artifact_path}")
+    print(f"  - 分类提示词预览:      {preview_path}")
     print(f"  - 运行报告:           {report_path}")
     print("=" * 60)
     return 0
@@ -957,26 +1057,22 @@ def test_prompt(work_dir, prompt_type, prompt_content):
     """单提示词调优测试：用给定提示词内容跑一次推理，返回 JSON 结果到 stdout
     
     Args:
-        work_dir: 工作目录（需包含待分类材料/）
+        work_dir: 工作目录（需包含一级材料目录样本）
         prompt_type: 'extract' 或 'aggregate'
         prompt_content: 提示词文本内容
     """
     base_dir = os.path.abspath(work_dir)
-    
-    # 查找待分类材料
-    unclassified_dir = None
-    for name in ['待分类材料', '待分类']:
-        p = os.path.join(base_dir, name)
-        if os.path.exists(p):
-            unclassified_dir = p
-            break
-    if not unclassified_dir:
-        print(json.dumps({"error": "未找到待分类材料目录"}, ensure_ascii=False))
+
+    sample_groups = discover_material_sample_groups(base_dir)
+    if not sample_groups:
+        print(json.dumps({"error": "未检测到任何材料样本目录"}, ensure_ascii=False))
         return
 
-    image_files = get_images_in_dir(unclassified_dir)
+    image_files = []
+    for group in sample_groups:
+        image_files.extend(group['files'])
     if not image_files:
-        print(json.dumps({"error": "待分类材料目录中无可处理文件"}, ensure_ascii=False))
+        print(json.dumps({"error": "材料样本目录中无可处理文件"}, ensure_ascii=False))
         return
 
     # 读取材料名称
@@ -984,7 +1080,7 @@ def test_prompt(work_dir, prompt_type, prompt_content):
     if not factors_path:
         print(json.dumps({"error": "未找到 factors 文件"}, ensure_ascii=False))
         return
-    material_names = read_material_names(factors_path)
+    material_names = [group['material_name'] for group in sample_groups]
 
     client = get_qwen_client()
     if not client:
@@ -992,7 +1088,7 @@ def test_prompt(work_dir, prompt_type, prompt_content):
         return
 
     print(f"[测试] 开始测试 {'分类信息提取' if prompt_type == 'extract' else '附件归集'} 提示词...")
-    print(f"[测试] 待处理文件: {len(image_files)} 个")
+    print(f"[测试] 待处理样本: {len(image_files)} 个")
 
     if prompt_type == 'extract':
         step1_raw = run_step1_extraction(client, image_files, prompt_content, material_names)

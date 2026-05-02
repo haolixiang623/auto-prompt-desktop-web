@@ -5,6 +5,7 @@ import json
 import mimetypes
 import os
 import re
+import select
 import secrets
 import sqlite3
 import subprocess
@@ -32,6 +33,14 @@ from pydantic import BaseModel
 from .core.paths import get_paths
 from .core.data import DataStore
 from .core.excel_parser import parse_excel_for_cases, parse_excel_for_review_rules
+from .factors_workbook import load_factors_workbook, save_factors_workbook
+from .factor_prompt_artifacts import build_preview_prompt, load_factor_prompt_artifact, save_factor_prompt_artifact
+from .review_rule_builtin_variables import normalize_review_rule_builtin_variables
+from .workspace_validation import (
+    collect_workspace_material_dirs,
+    collect_workspace_sample_files,
+    validate_workspace_bundle,
+)
 
 
 OPENAI_COMPAT_BASE_URL = "https://api.openai.com/v1"
@@ -44,6 +53,76 @@ DEFAULT_MODELS = [
     {"id": "4", "name": "Qwen Plus (Text)", "model": "qwen-plus", "base_url": DASHSCOPE_COMPAT_BASE_URL, "api_key": "", "type": "text", "params": []},
     {"id": "5", "name": "Qwen Max (Text)", "model": "qwen-max", "base_url": DASHSCOPE_COMPAT_BASE_URL, "api_key": "", "type": "text", "params": []},
 ]
+
+DEFAULT_EXTRACT_PROMPT_TEMPLATE = """# 角色与核心指令
+你是一个高精度的文本提取器。你的唯一任务是从用户提供的材料中，逐字逐句地定位并返回指定的要素文本内容。你必须遵守以下铁律：
+1. **严格忠于原文**：只返回材料中明确出现的文本片段，不做任何推断、总结、解释或补全。如果材料中没有对应内容，必须返回""。
+2. **禁止联想**：绝对禁止基于常识或外部知识添加任何材料中不存在的信息。
+
+# 要素识别规范
+统一要求：
+- 识别到相关要素，但要素值未填写，则返回value为空，但需返回具体要素的bbox坐标；若未识别的相关要素字段则跳过该要素、无需返回到输出的msginfo中
+- 对于需要返回的要素，需返回 name（要素名称）、value（识别值过滤空格）、bbox（坐标格式 [x1,y1,x2,y2]，以左上角为基准）
+- 未识别时 value 和 bbox 返回空字符串
+- 坐标需保持识别一致性
+- 最终返回的要素名称用序号代替
+
+# 识别要素列表及规则
+$(factors)
+
+# 输出格式要求
+请严格按照以下JSON格式输出，
+{
+  "msginfo": [
+    {"name": "1", "value": "要素值", "bbox": [x1,y1,x2,y2]}
+  ]
+}
+**无需返回分析过程，直接输出JSON代码块。**
+"""
+
+DEFAULT_ANALYSIS_PROMPT_TEMPLATE = """请仔细分析这张图片，识别以下要素的内容：
+{{factor_list}}
+
+对于每个要素，请提取其在图片中的实际值。如果某个要素不存在，请说明。
+请以JSON格式返回，格式如下：
+{
+  "factors": [
+    {"name": "要素名称", "value": "识别到的值", "exists": true}
+  ]
+}"""
+
+DEFAULT_RULE_PROMPT_TEMPLATE = """基于以下要素识别结果和用户提供的说明，为每个要素生成精准的提取规则和格式要求。
+
+要素列表及说明：
+{{factor_context}}
+
+识别结果（仅用于理解要素的位置和上下文，不得将具体数值写入规则）：
+{{analysis_result}}
+
+请为每个要素生成：
+1. **提取规则**：描述如何在同类文档中定位和识别该要素（结合用户提供的提取说明和规则说明）
+2. **格式要求**：描述提取后的格式处理要求（参考用户的规则说明）
+
+**泛化要求（重要）**：
+- 提取规则必须具备通用性，适用于同类型的所有文档，而不仅针对本次识别到的具体文档
+- 禁止在规则中出现具体的数值、金额、日期、名称、编号等特定文档才有的内容
+- 规则描述应基于要素的结构特征和位置规律（如"位于文档抬头"、"表格第X列"、"盖章处下方"等）
+- 可描述数据类型特征（如"数字"、"日期格式"、"中文名称"），但不能写具体值
+- 格式要求要明确，参考用户的规则说明，如果不需要格式处理则说明"保持原格式"
+
+请以JSON格式返回：
+{
+  "factors": [
+    {
+      "name": "要素名称",
+      "rule": "通用的提取规则描述（不含具体值）",
+      "format": "格式要求描述"
+    }
+  ]
+}"""
+
+BROKEN_DEFAULT_ANALYSIS_PROMPT_TEMPLATE = "请结合以下要素上下文识别样本文档中每个要素的实际位置、结构特征和可见值：\n{{factor_context}}"
+BROKEN_DEFAULT_RULE_PROMPT_TEMPLATE = "基于识别结果为每个未命中要素生成可泛化的 factor_prompt，禁止写样本中的具体值。\n识别结果：\n{{analysis_result}}"
 
 
 def load_json(path: Path, default: Any) -> Any:
@@ -93,6 +172,53 @@ def normalize_models(raw_models: Any) -> list[dict[str, Any]]:
             entry["id"] = str(index)
         normalized.append(entry)
     return normalized
+
+
+def default_extract_profile(system_prompt: str | None = None) -> dict[str, Any]:
+    return {
+        "id": "gov-default",
+        "name": "政务通用规则",
+        "unmatchedStrategy": "ai_generate",
+        "systemPrompt": str(system_prompt or PromptBundle.extract).strip(),
+        "analysisPromptTemplate": DEFAULT_ANALYSIS_PROMPT_TEMPLATE,
+        "generationPromptTemplate": DEFAULT_RULE_PROMPT_TEMPLATE,
+        "promptTemplate": DEFAULT_EXTRACT_PROMPT_TEMPLATE,
+    }
+
+
+def normalize_extract_profile(raw_profile: Any, fallback_system_prompt: str | None = None) -> dict[str, Any]:
+    base = default_extract_profile(fallback_system_prompt)
+    profile = raw_profile if isinstance(raw_profile, dict) else {}
+    analysis_prompt_template = str(profile.get("analysisPromptTemplate") or base["analysisPromptTemplate"]).strip() or base["analysisPromptTemplate"]
+    generation_prompt_template = str(profile.get("generationPromptTemplate") or base["generationPromptTemplate"]).strip() or base["generationPromptTemplate"]
+    if analysis_prompt_template == BROKEN_DEFAULT_ANALYSIS_PROMPT_TEMPLATE:
+        analysis_prompt_template = DEFAULT_ANALYSIS_PROMPT_TEMPLATE
+    if generation_prompt_template == BROKEN_DEFAULT_RULE_PROMPT_TEMPLATE:
+        generation_prompt_template = DEFAULT_RULE_PROMPT_TEMPLATE
+    normalized = {
+        "id": str(profile.get("id") or base["id"]).strip() or base["id"],
+        "name": str(profile.get("name") or base["name"]).strip() or base["name"],
+        "unmatchedStrategy": str(profile.get("unmatchedStrategy") or base["unmatchedStrategy"]).strip() or base["unmatchedStrategy"],
+        "systemPrompt": str(profile.get("systemPrompt") or fallback_system_prompt or base["systemPrompt"]).strip(),
+        "analysisPromptTemplate": analysis_prompt_template,
+        "generationPromptTemplate": generation_prompt_template,
+        "promptTemplate": str(profile.get("promptTemplate") or base["promptTemplate"]).strip() or base["promptTemplate"],
+    }
+    return normalized
+
+
+def normalize_extract_profiles(raw_profiles: Any, fallback_system_prompt: str | None = None) -> list[dict[str, Any]]:
+    if not isinstance(raw_profiles, list) or not raw_profiles:
+        return [default_extract_profile(fallback_system_prompt)]
+    normalized = [normalize_extract_profile(item, fallback_system_prompt) for item in raw_profiles]
+    seen_ids: set[str] = set()
+    deduped: list[dict[str, Any]] = []
+    for profile in normalized:
+        if profile["id"] in seen_ids:
+            continue
+        seen_ids.add(profile["id"])
+        deduped.append(profile)
+    return deduped or [default_extract_profile(fallback_system_prompt)]
 
 
 def fail(status: int, message: str) -> None:
@@ -265,18 +391,8 @@ class WorkspaceService:
             if not entry.is_dir():
                 continue
             ws_id = entry.name
-            # 按模块过滤
-            if module:
-                module_file = entry / ".module"
-                if not module_file.exists() or module_file.read_text().strip() != module:
-                    continue
-            ctime = datetime.fromtimestamp(entry.stat().st_ctime)
             module_file = entry / ".module"
             ws_module = module_file.read_text().strip() if module_file.exists() else ""
-            # 统计顶级子目录（即材料文件夹）
-            materials = [d.name for d in sorted(entry.iterdir()) if d.is_dir() and not d.name.startswith(".") and not d.name.startswith("__")]
-            total_files = sum(1 for _ in entry.rglob("*") if _.is_file())
-            # 读取生成状态
             status_file = entry / ".gen_status"
             gen_status = ""
             if status_file.exists():
@@ -284,6 +400,14 @@ class WorkspaceService:
                     gen_status = status_file.read_text().strip()
                 except Exception:
                     pass
+            # 兼容历史数据：旧版要素生成可能只写入了 .gen_status，未及时写 .module
+            if module and ws_module != module:
+                if not (module == "generate" and gen_status):
+                    continue
+            ctime = datetime.fromtimestamp(entry.stat().st_ctime)
+            # 统计顶级子目录（即材料文件夹）
+            materials = [d.name for d in sorted(entry.iterdir()) if d.is_dir() and not d.name.startswith(".") and not d.name.startswith("__")]
+            total_files = sum(1 for _ in entry.rglob("*") if _.is_file())
             result.append({
                 "id": ws_id,
                 "rootPath": str(entry),
@@ -301,6 +425,33 @@ class WorkspaceService:
         if not root.exists() or not root.is_dir():
             return False
         (root / ".module").write_text(module)
+        return True
+
+    def update_workspace_activity(
+        self,
+        user_id: str,
+        workspace_id: str,
+        module: Optional[str] = None,
+        status: Optional[str] = None,
+    ) -> bool:
+        root = self._user_workspace_root(user_id) / workspace_id
+        if not root.exists() or not root.is_dir():
+            return False
+
+        if module is not None:
+            module_file = root / ".module"
+            if module:
+                module_file.write_text(module)
+            elif module_file.exists():
+                module_file.unlink()
+
+        if status is not None:
+            status_file = root / ".gen_status"
+            if status:
+                status_file.write_text(status)
+            elif status_file.exists():
+                status_file.unlink()
+
         return True
 
     def delete_workspace(self, user_id: str, workspace_id: str) -> bool:
@@ -463,10 +614,17 @@ class AuthStore:
         return updated
 
 
+class TaskCancelledError(Exception):
+    """Raised when a background task is cancelled by the user."""
+
+
 class TaskStore:
     def __init__(self, task_root: Path):
         self._tasks: dict[str, dict[str, Any]] = {}
         self._logs: dict[str, list[str]] = {}
+        self._cancel_requested: set[str] = set()
+        self._processes: dict[str, subprocess.Popen[str]] = {}
+        self._lock = threading.Lock()
 
     def create(self, kind: str, owner_user_id: str, data_store: Any = None):
         task_id = str(uuid4())
@@ -480,41 +638,90 @@ class TaskStore:
             "owner_user_id": owner_user_id,
             "model_dump": lambda self=None: {"id": task_id, "kind": kind, "status": self.status if self else "pending", "progress": self.progress if self else 0, "result": self.result if self else None, "error": self.error if self else None},
         })()
-        self._tasks[task_id] = task
-        self._logs[task_id] = []
+        with self._lock:
+            self._tasks[task_id] = task
+            self._logs[task_id] = []
         return task
 
     def get(self, task_id: str, owner_user_id: str):
-        task = self._tasks.get(task_id)
-        return task if task and task.owner_user_id == owner_user_id else None
+        with self._lock:
+            task = self._tasks.get(task_id)
+            return task if task and task.owner_user_id == owner_user_id else None
 
     def logs(self, task_id: str, owner_user_id: str):
         task = self.get(task_id, owner_user_id)
-        return list(self._logs.get(task_id, [])) if task else None
+        if not task:
+            return None
+        with self._lock:
+            return list(self._logs.get(task_id, []))
 
     def mark_running(self, task_id: str, progress: int = 0):
-        task = self._tasks.get(task_id)
-        if task:
-            task.status = "running"
-            task.progress = progress
+        with self._lock:
+            task = self._tasks.get(task_id)
+            if task and task.status not in {"succeeded", "failed", "cancelled"}:
+                task.status = "running"
+                task.progress = progress
 
     def append_log(self, task_id: str, line: str):
-        if task_id in self._logs:
-            self._logs[task_id].append(line)
+        with self._lock:
+            if task_id in self._logs:
+                self._logs[task_id].append(line)
 
     def complete(self, task_id: str, result: Any):
-        task = self._tasks.get(task_id)
-        if task:
-            task.status = "succeeded"
-            task.progress = 100
-            task.result = result
-            task.error = None
+        with self._lock:
+            task = self._tasks.get(task_id)
+            if task and task.status not in {"succeeded", "failed", "cancelled"}:
+                task.status = "succeeded"
+                task.progress = 100
+                task.result = result
+                task.error = None
+            self._cancel_requested.discard(task_id)
+            self._processes.pop(task_id, None)
 
     def fail(self, task_id: str, error: str):
-        task = self._tasks.get(task_id)
-        if task:
-            task.status = "failed"
-            task.error = error
+        with self._lock:
+            task = self._tasks.get(task_id)
+            if task and task.status not in {"succeeded", "failed", "cancelled"}:
+                task.status = "failed"
+                task.error = error
+            self._cancel_requested.discard(task_id)
+            self._processes.pop(task_id, None)
+
+    def mark_cancelled(self, task_id: str, error: str = "已停止生成"):
+        with self._lock:
+            task = self._tasks.get(task_id)
+            if task and task.status not in {"succeeded", "failed", "cancelled"}:
+                task.status = "cancelled"
+                task.error = error
+            self._cancel_requested.discard(task_id)
+            self._processes.pop(task_id, None)
+
+    def request_cancel(self, task_id: str, owner_user_id: str):
+        with self._lock:
+            task = self._tasks.get(task_id)
+            if not task or task.owner_user_id != owner_user_id:
+                return None
+            if task.status in {"succeeded", "failed", "cancelled"}:
+                return task
+            self._cancel_requested.add(task_id)
+            process = self._processes.get(task_id)
+        if process is not None:
+            _terminate_process(process)
+        return task
+
+    def is_cancel_requested(self, task_id: str) -> bool:
+        with self._lock:
+            return task_id in self._cancel_requested
+
+    def register_process(self, task_id: str, process: subprocess.Popen[str]) -> None:
+        with self._lock:
+            self._processes[task_id] = process
+
+    def unregister_process(self, task_id: str, process: Optional[subprocess.Popen[str]] = None) -> None:
+        with self._lock:
+            current = self._processes.get(task_id)
+            if process is None or current is process:
+                self._processes.pop(task_id, None)
 
 
 @dataclass
@@ -531,6 +738,9 @@ class UiSettingsStore:
         "models",
         "god_prompt",
         "extract_god_prompt",
+        "extract_profiles",
+        "default_extract_profile_id",
+        "review_rule_builtin_variables",
         "llm_timeout",
     )
 
@@ -564,6 +774,19 @@ class UiSettingsStore:
         local_models = normalize_models(local.get("models", project_models))
         default_model_id = local.get("default_model_id", project.get("default_model_id", local_models[0]["id"] if local_models else "1"))
         model_name = local.get("model_name", project.get("model_name", local_models[0]["model"] if local_models else ""))
+        legacy_extract_prompt = local.get("extract_god_prompt", project.get("extract_god_prompt", PromptBundle.extract))
+        project_extract_profiles = normalize_extract_profiles(
+            project.get("extract_profiles"),
+            project.get("extract_god_prompt", PromptBundle.extract),
+        )
+        raw_local_extract_profiles = local.get("extract_profiles")
+        if raw_local_extract_profiles is None:
+            raw_local_extract_profiles = project.get("extract_profiles")
+        local_extract_profiles = normalize_extract_profiles(raw_local_extract_profiles, legacy_extract_prompt)
+        default_extract_profile_id = local.get(
+            "default_extract_profile_id",
+            project.get("default_extract_profile_id", local_extract_profiles[0]["id"] if local_extract_profiles else default_extract_profile()["id"]),
+        )
         settings = {
             "api_key": local["api_key"] if "api_key" in local else fallback_api_key,
             "api_key_configured": False,
@@ -571,7 +794,12 @@ class UiSettingsStore:
             "model_name": model_name,
             "models": local_models or normalize_models(DEFAULT_MODELS),
             "god_prompt": local.get("god_prompt", project.get("god_prompt", PromptBundle.classify)),
-            "extract_god_prompt": local.get("extract_god_prompt", project.get("extract_god_prompt", PromptBundle.extract)),
+            "extract_god_prompt": legacy_extract_prompt,
+            "extract_profiles": local_extract_profiles,
+            "default_extract_profile_id": default_extract_profile_id,
+            "review_rule_builtin_variables": normalize_review_rule_builtin_variables(
+                local.get("review_rule_builtin_variables", project.get("review_rule_builtin_variables"))
+            ),
             "llm_timeout": local.get("llm_timeout", project.get("llm_timeout", 120)),
         }
         settings["api_key_configured"] = bool(
@@ -588,6 +816,22 @@ class UiSettingsStore:
         current = self.load_front()
         current.update({k: v for k, v in payload.items() if k in self.FRONT_FIELDS})
         current["models"] = normalize_models(current.get("models"))
+        current["extract_profiles"] = normalize_extract_profiles(
+            current.get("extract_profiles"),
+            current.get("extract_god_prompt"),
+        )
+        current["review_rule_builtin_variables"] = normalize_review_rule_builtin_variables(
+            current.get("review_rule_builtin_variables")
+        )
+        extract_default = next(
+            (profile for profile in current["extract_profiles"] if profile.get("id") == current.get("default_extract_profile_id")),
+            None,
+        )
+        if extract_default is None and current["extract_profiles"]:
+            current["default_extract_profile_id"] = current["extract_profiles"][0]["id"]
+            current["extract_god_prompt"] = current["extract_profiles"][0]["systemPrompt"]
+        elif extract_default is not None:
+            current["extract_god_prompt"] = extract_default["systemPrompt"]
         selected = next((m for m in current["models"] if m.get("id") == current.get("default_model_id")), None)
         if selected:
             current["model_name"] = selected.get("model", current.get("model_name", ""))
@@ -628,6 +872,12 @@ class UpdateUserStatusRequest(BaseModel):
 class SavePromptRequest(BaseModel):
     filePath: str
     content: str
+
+
+class SaveArtifactRequest(BaseModel):
+    filePath: str
+    artifact: dict[str, Any]
+    previewFilePath: Optional[str] = None
 
 
 def _convert_pdf_first_page(pdf_path: Path, output_dir: Path) -> Optional[Path]:
@@ -741,6 +991,20 @@ def resolve_model_config(settings: dict[str, Any], model_cfg_id: Optional[str]) 
 def resolve_model_id(settings: dict[str, Any], model_cfg_id: Optional[str]) -> str:
     """Resolve a modelCfgId (string id from frontend) to the actual model_id string."""
     return resolve_model_config(settings, model_cfg_id)["model_id"]
+
+
+def resolve_extract_profile(settings: dict[str, Any], rule_profile_id: Optional[str]) -> dict[str, Any]:
+    profiles = normalize_extract_profiles(
+        settings.get("extract_profiles"),
+        settings.get("extract_god_prompt"),
+    )
+    selected_id = rule_profile_id or settings.get("default_extract_profile_id")
+    if selected_id:
+        selected = next((profile for profile in profiles if profile.get("id") == selected_id), None)
+        if selected is None:
+            raise ValueError(f"extract profile not found: {selected_id}")
+        return selected
+    return profiles[0]
 
 
 def split_dashscope_extra_params(extra_params: Optional[dict[str, Any]]) -> dict[str, Any]:
@@ -878,6 +1142,10 @@ def read_factors_script(paths: Any, work_dir: str) -> list[dict[str, Any]]:
     return json.loads(output.stdout or "[]")
 
 
+def resolve_factors_workbook_path(work_dir: str) -> Path:
+    return Path(work_dir) / "factors.xlsx"
+
+
 def run_factor_json(paths: Any, work_dir: str, group_size: int = 4, materials: Optional[list[str]] = None) -> list[dict[str, Any]]:
     script = paths.skills_dir / "factor-json-generator" / "generate_factor_json.py"
     cmd = [sys.executable, str(script), work_dir, "--group-size", str(group_size)]
@@ -904,11 +1172,16 @@ def run_generate_prompt(
     work_dir: str,
     material_name: Optional[str],
     model_cfg_id: Optional[str] = None,
+    use_case_library: bool = True,
+    rule_profile_id: Optional[str] = None,
+    task_store: Optional[TaskStore] = None,
+    task_id: Optional[str] = None,
 ) -> dict[str, Any]:
     material_dir = Path(work_dir) / material_name if material_name else Path(work_dir)
     user_id = _resolve_user_id_from_work_dir(paths, work_dir)
     script = paths.skills_dir / "doc-extract-prompt-gen" / "generate_prompt.py"
     model_config = resolve_model_config(settings, model_cfg_id)
+    extract_profile = resolve_extract_profile(settings, rule_profile_id)
     env = {
         **os.environ,
         "DASHSCOPE_API_KEY": model_config["api_key"],
@@ -917,7 +1190,9 @@ def run_generate_prompt(
         "MODEL_NAME": model_config["model"],
         "GENERATE_EXTRA_PARAMS": json.dumps(model_config["params"], ensure_ascii=False),
         "LLM_TIMEOUT": str(settings.get("llm_timeout", 120)),
-        "EXTRACT_GOD_PROMPT": settings["extract_god_prompt"],
+        "EXTRACT_GOD_PROMPT": extract_profile["systemPrompt"],
+        "GENERATE_USE_CASE_LIBRARY": "1" if use_case_library else "0",
+        "GENERATE_RULE_PROFILE_JSON": json.dumps(extract_profile, ensure_ascii=False),
         "AUTO_PROMPT_SKILLS_DIR": str(paths.skills_dir),
         "AUTO_PROMPT_API_URL": f"http://127.0.0.1:{os.environ.get('PORT', '18765')}",
         "AUTO_PROMPT_API_TOKEN": settings.get("api_token", ""),
@@ -925,107 +1200,52 @@ def run_generate_prompt(
     args = [sys.executable, str(script), str(material_dir)]
     if material_name:
         args.append(material_name)
-    output = subprocess.run(args, capture_output=True, text=True, encoding="utf-8", errors="ignore", env=env)
-    if output.returncode != 0:
-        raise ValueError(output.stderr.strip() or output.stdout.strip() or "generate prompt failed")
-    # 读取生成的提示词内容
+    if task_store and task_id:
+        run_lines_cancellable(args, env, None, task_store, task_id)
+    else:
+        output = subprocess.run(args, capture_output=True, text=True, encoding="utf-8", errors="ignore", env=env)
+        if output.returncode != 0:
+            raise ValueError(output.stderr.strip() or output.stdout.strip() or "generate prompt failed")
     raw_output = material_dir / f"{material_dir.name}--要素提取完整提示词.txt"
-    prompt_template = ""
-    if raw_output.exists():
-        prompt_template = raw_output.read_text(encoding="utf-8")
-    if not prompt_template.strip():
+    raw_artifact = material_dir / f"{material_dir.name}--要素提示词.json"
+    preview_prompt = ""
+    artifact: Optional[dict[str, Any]] = None
+    if raw_artifact.exists():
+        artifact = load_factor_prompt_artifact(raw_artifact)
+        preview_prompt = raw_output.read_text(encoding="utf-8") if raw_output.exists() else build_preview_prompt(
+            artifact.get("template", {}).get("prompt_template", ""),
+            artifact.get("factors", []),
+        )
+    elif raw_output.exists():
+        preview_prompt = raw_output.read_text(encoding="utf-8")
+    if not preview_prompt.strip():
         raise ValueError(f"generated prompt is empty: {raw_output}")
-    # 保存到用户隔离输出目录
     prompts_dir = paths.user_output_root / user_id / "prompts"
     prompts_dir.mkdir(parents=True, exist_ok=True)
     safe_name = re.sub(r"[^\w\u4e00-\u9fff-]", "_", material_dir.name)
     output_file = prompts_dir / f"{safe_name}--要素提取完整提示词.txt"
-    output_file.write_text(prompt_template, encoding="utf-8")
+    output_file.write_text(preview_prompt, encoding="utf-8")
+    artifact_file = ""
+    if artifact is not None:
+        save_factor_prompt_artifact(raw_artifact, artifact)
+        artifact_file = str(raw_artifact)
     return {
         "output_file": str(output_file),
+        "artifact_file": artifact_file,
         "factors_count": len(read_factors_script(paths, str(material_dir))),
         "images_count": sum(1 for entry in material_dir.iterdir() if entry.is_file() and entry.suffix.lower() in {".jpg", ".jpeg", ".png", ".bmp", ".gif", ".webp", ".pdf"}),
-        "prompt_template": prompt_template,
+        "prompt_template": preview_prompt,
+        "preview_prompt": preview_prompt,
+        "artifact": artifact,
     }
 
 
 def validate_factors_for_generate(paths: Any, work_dir: str, selected_materials: Optional[list[str]] = None) -> dict[str, Any]:
-    errors: list[str] = []
-    warnings: list[str] = []
-    selected_materials = selected_materials or []
-    root = Path(work_dir)
+    return validate_workspace_bundle(paths, work_dir, selected_materials)
 
-    factors_path: Optional[Path] = None
-    for name in ("factors.xlsx", "factors.xls", "factors.csv"):
-        candidate = root / name
-        if candidate.exists():
-            factors_path = candidate
-            break
 
-    if factors_path is None:
-        return {"ok": False, "errors": ["未找到 factors 文件（支持 factors.xlsx / factors.xls / factors.csv）"], "warnings": [], "stats": {}}
-
-    try:
-        factors = read_factors_script(paths, work_dir)
-    except Exception as exc:
-        return {"ok": False, "errors": [f"factors 文件格式解析失败：{exc}"], "warnings": [], "stats": {"factors_file": str(factors_path)}}
-
-    if not factors:
-        errors.append("factors 文件未解析出任何要素，请检查表头或内容是否为空。")
-        return {"ok": False, "errors": errors, "warnings": warnings, "stats": {"factors_file": str(factors_path), "factor_count": 0}}
-
-    # 1) 基础字段完整性校验
-    for index, factor in enumerate(factors, start=1):
-        if not str(factor.get("field_name", "")).strip():
-            errors.append(f"第 {index} 行要素名称为空。")
-
-    # 2) 重复要素名校验（按材料维度）
-    duplicate_keys: dict[tuple[str, str], int] = {}
-    for factor in factors:
-        material = str(factor.get("material", "")).strip() or "__GLOBAL__"
-        field_name = str(factor.get("field_name", "")).strip()
-        if not field_name:
-            continue
-        key = (material, field_name)
-        duplicate_keys[key] = duplicate_keys.get(key, 0) + 1
-
-    duplicates = [(material, name, count) for (material, name), count in duplicate_keys.items() if count > 1]
-    for material, name, count in duplicates:
-        if material == "__GLOBAL__":
-            errors.append(f"要素「{name}」在 factors 中重复出现 {count} 次（未区分材料）。")
-        else:
-            errors.append(
-                f"材料「{material}」下要素「{name}」重复出现 {count} 次。"
-                "建议在 Excel 中去重，仅保留唯一“材料名称 + 要素名称”组合。"
-            )
-
-    # 3) 选中材料覆盖校验
-    if selected_materials:
-        has_material_tag = any(str(item.get("material", "")).strip() for item in factors)
-        if has_material_tag:
-            by_material: dict[str, int] = {}
-            for item in factors:
-                mat = str(item.get("material", "")).strip()
-                if not mat:
-                    continue
-                by_material[mat] = by_material.get(mat, 0) + 1
-
-            for material_name in selected_materials:
-                if by_material.get(material_name, 0) == 0:
-                    errors.append(f"选中材料「{material_name}」在 factors 中没有对应要素行，请检查“材料名称”列是否一致。")
-        else:
-            warnings.append("factors 未解析到“材料名称”，将对所有选中材料复用同一套要素。")
-
-    return {
-        "ok": len(errors) == 0,
-        "errors": errors,
-        "warnings": warnings,
-        "stats": {
-            "factors_file": str(factors_path),
-            "factor_count": len(factors),
-            "selected_material_count": len(selected_materials),
-        },
-    }
+def validate_review_rule_workspace(paths: Any, work_dir: str) -> dict[str, Any]:
+    return validate_workspace_bundle(paths, work_dir)
 
 
 def _resolve_user_id_from_work_dir(paths: Any, work_dir: str) -> str:
@@ -1040,6 +1260,22 @@ def _resolve_user_id_from_work_dir(paths: Any, work_dir: str) -> str:
         if first:
             return first
     return "default"
+
+
+def _terminate_process(process: subprocess.Popen[str]) -> None:
+    if process.poll() is not None:
+        return
+    try:
+        process.terminate()
+        process.wait(timeout=1)
+        return
+    except Exception:
+        pass
+    try:
+        process.kill()
+        process.wait(timeout=1)
+    except Exception:
+        pass
 
 
 def run_lines(command: list[str], env: dict[str, str], cwd: Optional[str], log_cb: Optional[Any] = None) -> list[str]:
@@ -1063,6 +1299,69 @@ def run_lines(command: list[str], env: dict[str, str], cwd: Optional[str], log_c
     if process.wait() != 0:
         raise ValueError(lines[-1] if lines else "python task failed")
     return lines
+
+
+def run_lines_cancellable(
+    command: list[str],
+    env: dict[str, str],
+    cwd: Optional[str],
+    task_store: TaskStore,
+    task_id: str,
+    log_cb: Optional[Any] = None,
+) -> list[str]:
+    process = subprocess.Popen(
+        command,
+        cwd=cwd,
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        encoding="utf-8",
+        errors="ignore",
+    )
+    task_store.register_process(task_id, process)
+    lines: list[str] = []
+    stdout = process.stdout
+    assert stdout is not None
+    try:
+        while True:
+            if task_store.is_cancel_requested(task_id):
+                _terminate_process(process)
+                raise TaskCancelledError("已停止生成")
+
+            if process.poll() is not None:
+                break
+
+            ready, _, _ = select.select([stdout], [], [], 0.2)
+            if not ready:
+                continue
+
+            raw_line = stdout.readline()
+            if not raw_line:
+                continue
+            line = raw_line.rstrip("\r\n")
+            lines.append(line)
+            if log_cb and line and not line.startswith("RESULTS_JSON:") and not line.startswith("TEST_RESULT_JSON:"):
+                log_cb(line)
+
+        for raw_line in stdout.readlines():
+            line = raw_line.rstrip("\r\n")
+            lines.append(line)
+            if log_cb and line and not line.startswith("RESULTS_JSON:") and not line.startswith("TEST_RESULT_JSON:"):
+                log_cb(line)
+
+        if task_store.is_cancel_requested(task_id):
+            raise TaskCancelledError("已停止生成")
+
+        if process.wait() != 0:
+            raise ValueError(lines[-1] if lines else "python task failed")
+        return lines
+    finally:
+        try:
+            stdout.close()
+        except Exception:
+            pass
+        task_store.unregister_process(task_id, process)
 
 
 def run_classify(
@@ -1094,73 +1393,7 @@ def run_classify(
 
 
 def validate_classify_workspace(paths: Any, work_dir: str) -> dict[str, Any]:
-    root = Path(work_dir)
-    errors: list[str] = []
-    warnings: list[str] = []
-
-    if not root.exists() or not root.is_dir():
-        return {
-            "ok": False,
-            "errors": [f"工作区不存在或不可访问: {work_dir}"],
-            "warnings": [],
-            "meta": {},
-        }
-
-    factors_file = None
-    for name in ("factors.xlsx", "factors.xls", "factors.csv"):
-        candidate = root / name
-        if candidate.exists() and candidate.is_file():
-            factors_file = candidate
-            break
-    if factors_file is None:
-        errors.append("缺少 factors 文件（支持 factors.xlsx / factors.xls / factors.csv）。")
-
-    classified_dir = root / "已分类材料"
-    if not classified_dir.exists() or not classified_dir.is_dir():
-        warnings.append("未检测到“已分类材料”目录。分类开始时将自动创建该目录及事项子目录。")
-
-    pending_dir = None
-    for name in ("待分类材料", "待分类"):
-        candidate = root / name
-        if candidate.exists() and candidate.is_dir():
-            pending_dir = candidate
-            break
-    if pending_dir is None:
-        errors.append("缺少“待分类材料”目录（兼容目录名：待分类）。")
-
-    pending_count = 0
-    if pending_dir is not None:
-        valid_exts = {".jpg", ".jpeg", ".png", ".bmp", ".gif", ".webp", ".pdf"}
-        pending_count = sum(1 for item in pending_dir.iterdir() if item.is_file() and item.suffix.lower() in valid_exts)
-        if pending_count == 0:
-            errors.append(f"目录“{pending_dir.name}”中未找到可处理文件（支持 jpg/jpeg/png/bmp/gif/webp/pdf）。")
-
-    # 尝试读取类别，给出更明确的格式错误
-    categories_count = 0
-    if factors_file is not None:
-        try:
-            categories = []
-            for item in read_factors_script(paths, str(root)):
-                if item.get("material"):
-                    categories.append(item["material"])
-            categories_count = len(set(categories))
-            if categories_count == 0:
-                warnings.append("factors 中未解析到材料名称（材料名称列可能为空或格式不符合预期）。")
-        except Exception as exc:
-            errors.append(f"factors 文件解析失败：{exc}")
-
-    return {
-        "ok": len(errors) == 0,
-        "errors": errors,
-        "warnings": warnings,
-        "meta": {
-            "work_dir": str(root),
-            "factors_file": str(factors_file) if factors_file else "",
-            "pending_dir": pending_dir.name if pending_dir else "",
-            "pending_files": pending_count,
-            "categories": categories_count,
-        },
-    }
+    return validate_workspace_bundle(paths, work_dir)
 
 
 def run_test_classify(
@@ -1205,6 +1438,8 @@ def run_review_rule(
     model: Optional[str] = None,
     model_cfg_id: Optional[str] = None,
     materials: Optional[list[str]] = None,
+    task_store: Optional[TaskStore] = None,
+    task_id: Optional[str] = None,
 ) -> list[dict[str, Any]]:
     script = paths.skills_dir / "review-rule-generator" / "generate_review_rule.py"
     cmd = [sys.executable, str(script), work_dir]
@@ -1231,7 +1466,14 @@ def run_review_rule(
     env["AUTO_PROMPT_API_URL"] = f"http://127.0.0.1:{os.environ.get('PORT', '18765')}"
     env["AUTO_PROMPT_API_TOKEN"] = settings.get("api_token", "")
     env["GENERATE_EXTRA_PARAMS"] = json.dumps(model_config["params"], ensure_ascii=False)
-    lines = run_lines(cmd, env, None, log_cb)
+    env["REVIEW_RULE_BUILTIN_VARIABLES"] = json.dumps(
+        normalize_review_rule_builtin_variables(settings.get("review_rule_builtin_variables")),
+        ensure_ascii=False,
+    )
+    if task_store and task_id:
+        lines = run_lines_cancellable(cmd, env, None, task_store, task_id, log_cb)
+    else:
+        lines = run_lines(cmd, env, None, log_cb)
     for line in lines:
         if line.startswith("RESULTS_JSON:"):
             return json.loads(line.split("RESULTS_JSON:", 1)[1])
@@ -1358,6 +1600,24 @@ def build_zip_from_workdir(work_dir: Path, classified_dir: Path) -> bytes:
             if file_path.exists() and file_path.is_file():
                 zip_file.writestr(name, file_path.read_bytes())
 
+    return buffer.getvalue()
+
+
+def collect_workspace_artifact_files(work_dir: Path, patterns: list[str]) -> list[Path]:
+    found: dict[Path, Path] = {}
+    for pattern in patterns:
+        for candidate in work_dir.rglob(pattern):
+            if candidate.is_file():
+                found[candidate] = candidate
+    return sorted(found.values())
+
+
+def build_zip_from_file_set(root_dir: Path, file_paths: list[Path]) -> bytes:
+    buffer = BytesIO()
+    with ZipFile(buffer, "w", compression=ZIP_DEFLATED) as zip_file:
+        for file_path in file_paths:
+            arcname = file_path.relative_to(root_dir)
+            zip_file.writestr(str(arcname), file_path.read_bytes())
     return buffer.getvalue()
 
 
@@ -1581,6 +1841,24 @@ async def tag_workspace_route(workspace_id: str, payload: dict[str, Any], reques
     return {"ok": True}
 
 
+@app.put("/api/workspaces/activity")
+async def update_workspace_activity_route(payload: dict[str, Any], request: Request, user: Any = Depends(current_user)):
+    work_dir = payload.get("workDir", "")
+    module = payload.get("module")
+    status = payload.get("status")
+    paths = request.app.state.paths
+    real_work_dir = Path(_resolve_user_work_dir(paths, work_dir, user.id))
+    workspace_id = real_work_dir.name
+    if not request.app.state.workspaces.update_workspace_activity(
+        user.id,
+        workspace_id,
+        module=module,
+        status=status,
+    ):
+        fail(404, "workspace not found")
+    return {"ok": True}
+
+
 @app.delete("/api/workspaces/{workspace_id}")
 async def delete_workspace_route(workspace_id: str, request: Request, user: Any = Depends(current_user)):
     if not request.app.state.workspaces.delete_workspace(user.id, workspace_id):
@@ -1592,14 +1870,11 @@ async def delete_workspace_route(workspace_id: str, request: Request, user: Any 
 async def workspace_materials(workDir: str = Query(...), request: Request = None, user: Any = Depends(current_user)):
     paths = request.app.state.paths
     real_dir = _resolve_user_work_dir(paths, workDir, user.id)
-    root = Path(real_dir)
-    result = []
-    for entry in root.iterdir():
-        if entry.is_dir():
-            count = sum(1 for child in entry.iterdir() if child.is_file() and child.suffix.lower() in {".jpg", ".jpeg", ".png", ".bmp", ".gif", ".webp", ".pdf"})
-            if count:
-                result.append({"name": entry.name, "path": str(entry), "image_count": count})
-    return {"data": sorted(result, key=lambda item: item["name"])}
+    result = [
+        {"name": item["name"], "path": item["path"], "image_count": item["image_count"]}
+        for item in collect_workspace_material_dirs(Path(real_dir))
+    ]
+    return {"data": result}
 
 
 @app.get("/api/workspaces/factors")
@@ -1607,6 +1882,28 @@ async def workspace_factors(request: Request, workDir: str = Query(...), user: A
     paths = request.app.state.paths
     real_dir = _resolve_user_work_dir(paths, workDir, user.id)
     return {"data": read_factors_script(paths, real_dir)}
+
+
+@app.get("/api/workspaces/factors-workbook")
+async def workspace_factors_workbook(request: Request, workDir: str = Query(...), user: Any = Depends(current_user)):
+    paths = request.app.state.paths
+    real_dir = _resolve_user_work_dir(paths, workDir, user.id)
+    workbook_path = resolve_factors_workbook_path(real_dir)
+    return {"data": load_factors_workbook(workbook_path)}
+
+
+@app.put("/api/workspaces/factors-workbook")
+async def update_workspace_factors_workbook(payload: dict[str, Any], request: Request, user: Any = Depends(current_user)):
+    paths = request.app.state.paths
+    real_dir = _resolve_user_work_dir(paths, payload.get("workDir", ""), user.id)
+    workbook_path = resolve_factors_workbook_path(real_dir)
+    workbook_data = save_factors_workbook(
+        workbook_path,
+        payload.get("headers") or [],
+        payload.get("rows") or [],
+    )
+    validation = validate_workspace_bundle(paths, real_dir)
+    return {"ok": True, "data": {"workbook": workbook_data, "validation": validation}}
 
 
 @app.put("/api/workspaces/gen-status")
@@ -1640,12 +1937,80 @@ async def classify_validate_workdir(payload: dict[str, Any], request: Request, u
 async def classify_download_result(workDir: str = Query(...), request: Request = None, user: Any = Depends(current_user)):
     paths = request.app.state.paths
     real_work_dir = Path(_resolve_user_work_dir(paths, workDir, user.id))
-    classified_dir = real_work_dir / "已分类材料"
-    if not classified_dir.exists() or not classified_dir.is_dir():
-        raise HTTPException(status_code=404, detail="未找到已分类材料目录")
+    artifact_files = collect_workspace_artifact_files(
+        real_work_dir,
+        [
+            "材料分类提示词.json",
+            "材料分类完整提示词.txt",
+            "最新分类信息提取提示词.txt",
+            "最新分类附件归集提示词.txt",
+            "classification_report.json",
+        ],
+    )
+    if not artifact_files:
+        raise HTTPException(status_code=404, detail="未找到可下载的分类提示词结果")
+    factors_file = resolve_factors_workbook_path(str(real_work_dir))
+    if factors_file.exists():
+        artifact_files.append(factors_file)
 
-    archive = build_zip_from_workdir(real_work_dir, classified_dir)
-    filename = f"分类结果_{real_work_dir.name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip"
+    archive = build_zip_from_file_set(real_work_dir, artifact_files)
+    filename = f"材料分类结果_{real_work_dir.name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip"
+    return Response(
+        content=archive,
+        media_type="application/zip",
+        headers={
+            "Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}",
+        },
+    )
+
+
+@app.get("/api/generate/download-result")
+async def generate_download_result(workDir: str = Query(...), request: Request = None, user: Any = Depends(current_user)):
+    paths = request.app.state.paths
+    real_work_dir = Path(_resolve_user_work_dir(paths, workDir, user.id))
+    artifact_files = collect_workspace_artifact_files(
+        real_work_dir,
+        [
+            "*--要素提取完整提示词.txt",
+            "*--要素提示词.json",
+            "*--要素信息录入.json",
+        ],
+    )
+    if not artifact_files:
+        raise HTTPException(status_code=404, detail="未找到可下载的要素生成结果")
+    factors_file = resolve_factors_workbook_path(str(real_work_dir))
+    if factors_file.exists():
+        artifact_files.append(factors_file)
+
+    archive = build_zip_from_file_set(real_work_dir, artifact_files)
+    filename = f"要素生成结果_{real_work_dir.name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip"
+    return Response(
+        content=archive,
+        media_type="application/zip",
+        headers={
+            "Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}",
+        },
+    )
+
+
+@app.get("/api/review-rule/download-result")
+async def review_rule_download_result(workDir: str = Query(...), request: Request = None, user: Any = Depends(current_user)):
+    paths = request.app.state.paths
+    real_work_dir = Path(_resolve_user_work_dir(paths, workDir, user.id))
+    artifact_files = collect_workspace_artifact_files(
+        real_work_dir,
+        [
+            "*--审查规则导入.json",
+        ],
+    )
+    if not artifact_files:
+        raise HTTPException(status_code=404, detail="未找到可下载的审查规则结果")
+    factors_file = resolve_factors_workbook_path(str(real_work_dir))
+    if factors_file.exists():
+        artifact_files.append(factors_file)
+
+    archive = build_zip_from_file_set(real_work_dir, artifact_files)
+    filename = f"审查规则结果_{real_work_dir.name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip"
     return Response(
         content=archive,
         media_type="application/zip",
@@ -1661,12 +2026,23 @@ async def generate_prompt(payload: dict[str, Any], request: Request, user: Any =
     paths = request.app.state.paths
     _ensure_user_dirs(paths, user.id)
     real_work_dir = _resolve_user_work_dir(paths, payload["workDir"], user.id)
+    validation = validate_workspace_bundle(paths, real_work_dir, [payload.get("materialName")] if payload.get("materialName") else None)
+    if not validation.get("ok"):
+        fail(400, "\n".join(validation.get("errors", [])) or "workspace validation failed")
     llm_logs = request.app.state.llm_logs
     start = time.time()
     model_cfg_id = payload.get("modelCfgId")
     model_id = resolve_model_id(settings, model_cfg_id)
     try:
-        data = run_generate_prompt(paths, settings, real_work_dir, payload.get("materialName"), model_cfg_id=model_cfg_id)
+        data = run_generate_prompt(
+            paths,
+            settings,
+            real_work_dir,
+            payload.get("materialName"),
+            model_cfg_id=model_cfg_id,
+            use_case_library=bool(payload.get("useCaseLibrary", True)),
+            rule_profile_id=payload.get("ruleProfileId"),
+        )
         llm_logs.add(scene="提示词生成", model=model_id,
                      prompt_summary=f"材料: {payload.get('materialName', '全部')}", 
                      response_summary=data.get("prompt_template", "")[:500],
@@ -1688,6 +2064,13 @@ async def validate_generate_factors(payload: dict[str, Any], request: Request, u
     return {"data": result}
 
 
+@app.post("/api/review-rule/validate-workspace")
+async def validate_review_rule_workspace_route(payload: dict[str, Any], request: Request, user: Any = Depends(current_user)):
+    paths = request.app.state.paths
+    real_work_dir = _resolve_user_work_dir(paths, payload.get("workDir", ""), user.id)
+    return {"data": validate_review_rule_workspace(paths, real_work_dir)}
+
+
 @app.post("/api/generate/verify")
 async def generate_verify(payload: dict[str, Any], request: Request, user: Any = Depends(current_user)):
     settings = request.app.state.ui_settings.load_front()
@@ -1696,6 +2079,15 @@ async def generate_verify(payload: dict[str, Any], request: Request, user: Any =
     # 或者是用户编辑后的路径；直接使用（不做二次映射避免路径错误）
     material_dir = Path(payload["materialDir"])
     prompt_text = payload.get("promptText", "")
+    if payload.get("artifactFile"):
+        artifact = load_factor_prompt_artifact(Path(payload["artifactFile"]))
+        prompt_text = build_preview_prompt(artifact.get("template", {}).get("prompt_template", ""), artifact.get("factors", []))
+    elif isinstance(payload.get("artifact"), dict):
+        artifact = payload["artifact"]
+        prompt_text = build_preview_prompt(
+            artifact.get("template", {}).get("prompt_template", ""),
+            artifact.get("factors", []),
+        )
     model_cfg_id = payload.get("modelCfgId")
     model_config = resolve_model_config(settings, model_cfg_id)
     result = run_verify_extraction(material_dir, prompt_text, model_config["model"], model_config["api_key"],
@@ -1713,6 +2105,22 @@ async def save_prompt(body: SavePromptRequest, user: Any = Depends(current_user)
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(body.content, encoding="utf-8")
     return {"ok": True}
+
+
+@app.post("/api/generate/save-artifact")
+async def save_artifact(body: SaveArtifactRequest, user: Any = Depends(current_user)):
+    artifact = save_factor_prompt_artifact(body.filePath, body.artifact)
+    if body.previewFilePath:
+        preview_target = Path(body.previewFilePath)
+        preview_target.parent.mkdir(parents=True, exist_ok=True)
+        preview_target.write_text(
+            build_preview_prompt(
+                artifact.get("template", {}).get("prompt_template", ""),
+                artifact.get("factors", []),
+            ),
+            encoding="utf-8",
+        )
+    return {"ok": True, "data": {"artifact": artifact}}
 
 
 @app.post("/api/generate/factor-json")
@@ -1807,10 +2215,27 @@ async def start_task(kind: str, payload: dict[str, Any], request: Request, user:
             _ensure_user_dirs(paths, user.id)
             real_work_dir = _resolve_user_work_dir(paths, payload.get("workDir", ""), user.id)
             if kind == "generate":
+                validation = validate_workspace_bundle(paths, real_work_dir, [payload.get("materialName")] if payload.get("materialName") else None)
+                for warning in validation.get("warnings", []):
+                    request.app.state.tasks.append_log(task.id, f"[校验提示] {warning}")
+                if not validation.get("ok"):
+                    for error in validation.get("errors", []):
+                        request.app.state.tasks.append_log(task.id, f"[校验失败] {error}")
+                    raise ValueError("\n".join(validation.get("errors", [])) or "generate workspace validation failed")
                 t0 = time.time()
                 model_cfg_id = payload.get("modelCfgId")
                 model_id = resolve_model_id(settings, model_cfg_id)
-                result = run_generate_prompt(paths, settings, real_work_dir, payload.get("materialName"), model_cfg_id=model_cfg_id)
+                result = run_generate_prompt(
+                    paths,
+                    settings,
+                    real_work_dir,
+                    payload.get("materialName"),
+                    model_cfg_id=model_cfg_id,
+                    use_case_library=bool(payload.get("useCaseLibrary", True)),
+                    rule_profile_id=payload.get("ruleProfileId"),
+                    task_store=request.app.state.tasks,
+                    task_id=task.id,
+                )
                 llm_logs.add(scene="提示词生成", model=model_id,
                              prompt_summary=f"材料: {payload.get('materialName', '全部')}",
                              response_summary=result.get("prompt_template", "")[:500],
@@ -1827,6 +2252,13 @@ async def start_task(kind: str, payload: dict[str, Any], request: Request, user:
                                                llm_logs=llm_logs)
                 request.app.state.tasks.complete(task.id, result)
             elif kind == "classify":
+                validation = validate_workspace_bundle(paths, real_work_dir)
+                for warning in validation.get("warnings", []):
+                    request.app.state.tasks.append_log(task.id, f"[校验提示] {warning}")
+                if not validation.get("ok"):
+                    for error in validation.get("errors", []):
+                        request.app.state.tasks.append_log(task.id, f"[校验失败] {error}")
+                    raise ValueError("\n".join(validation.get("errors", [])) or "classify workspace validation failed")
                 t0 = time.time()
                 model_cfg_id = payload.get("modelCfgId")
                 model_id = resolve_model_id(settings, model_cfg_id)
@@ -1844,6 +2276,13 @@ async def start_task(kind: str, payload: dict[str, Any], request: Request, user:
                              success=True, elapsed_s=time.time() - t0)
                 request.app.state.tasks.complete(task.id, result)
             elif kind == "test-classify-prompt":
+                validation = validate_workspace_bundle(paths, real_work_dir)
+                for warning in validation.get("warnings", []):
+                    request.app.state.tasks.append_log(task.id, f"[校验提示] {warning}")
+                if not validation.get("ok"):
+                    for error in validation.get("errors", []):
+                        request.app.state.tasks.append_log(task.id, f"[校验失败] {error}")
+                    raise ValueError("\n".join(validation.get("errors", [])) or "classify prompt validation failed")
                 result = run_test_classify(
                     paths,
                     settings,
@@ -1861,6 +2300,13 @@ async def start_task(kind: str, payload: dict[str, Any], request: Request, user:
                 request.app.state.tasks.complete(task.id, result)
             elif kind == "review-rule":
                 t0 = time.time()
+                validation = validate_workspace_bundle(paths, real_work_dir)
+                for warning in validation.get("warnings", []):
+                    request.app.state.tasks.append_log(task.id, f"[校验提示] {warning}")
+                if not validation.get("ok"):
+                    for error in validation.get("errors", []):
+                        request.app.state.tasks.append_log(task.id, f"[校验失败] {error}")
+                    raise ValueError("\n".join(validation.get("errors", [])) or "review-rule workspace validation failed")
                 result = run_review_rule(
                     paths,
                     settings,
@@ -1872,6 +2318,8 @@ async def start_task(kind: str, payload: dict[str, Any], request: Request, user:
                     model=payload.get("model"),
                     model_cfg_id=payload.get("modelCfgId"),
                     materials=payload.get("materials") or None,
+                    task_store=request.app.state.tasks,
+                    task_id=task.id,
                 )
                 llm_logs.add(scene="审查规则生成", model=payload.get("model") or resolve_model_id(settings, payload.get("modelCfgId")),
                              prompt_summary=f"工作目录: {Path(real_work_dir).name}, useLlm={payload.get('useLlm')}",
@@ -1891,6 +2339,9 @@ async def start_task(kind: str, payload: dict[str, Any], request: Request, user:
                 request.app.state.tasks.complete(task.id, result)
             else:
                 request.app.state.tasks.fail(task.id, f"unsupported python task kind: {kind}")
+        except TaskCancelledError as exc:
+            request.app.state.tasks.append_log(task.id, f"[取消] {exc}")
+            request.app.state.tasks.mark_cancelled(task.id, str(exc))
         except Exception as exc:
             request.app.state.tasks.append_log(task.id, f"[error] {exc}")
             request.app.state.tasks.fail(task.id, str(exc))
@@ -1907,6 +2358,14 @@ async def start_task(kind: str, payload: dict[str, Any], request: Request, user:
 @app.get("/api/task-runs/{task_id}")
 async def get_task(task_id: str, request: Request, user: Any = Depends(current_user)):
     task = request.app.state.tasks.get(task_id, user.id)
+    if not task:
+        fail(404, "task not found")
+    return task.model_dump()
+
+
+@app.post("/api/task-runs/{task_id}/cancel")
+async def cancel_task_route(task_id: str, request: Request, user: Any = Depends(current_user)):
+    task = request.app.state.tasks.request_cancel(task_id, user.id)
     if not task:
         fail(404, "task not found")
     return task.model_dump()
@@ -2090,18 +2549,9 @@ async def invoke(command: str, payload: dict[str, Any], request: Request, user: 
         target.write_text(payload["content"], encoding="utf-8")
         return None
     if command == "get_material_categories":
-        names = []
-        for item in read_factors_script(paths, real_work_dir):
-            if item.get("material"):
-                names.append(item["material"])
-        return sorted(list(dict.fromkeys(names)))
+        return [item["name"] for item in collect_workspace_material_dirs(Path(real_work_dir))]
     if command == "get_pending_files":
-        root = Path(real_work_dir)
-        for name in ("待分类材料", "待分类"):
-            if (root / name).exists():
-                root = root / name
-                break
-        return [{"name": entry.name, "path": str(entry), "size": entry.stat().st_size} for entry in root.iterdir() if entry.is_file()]
+        return collect_workspace_sample_files(Path(real_work_dir))
     if command == "write_file":
         target = Path(payload["path"])
         target.parent.mkdir(parents=True, exist_ok=True)

@@ -16,6 +16,14 @@ def make_settings():
         "extract_god_prompt": "extract-god",
         "god_prompt": "classify-god",
         "llm_timeout": 120,
+        "review_rule_builtin_variables": [
+            {
+                "token": "当前日期",
+                "name": "当前日期",
+                "placeholder": "$系统变量:当前日期$",
+                "dataType": "date",
+            }
+        ],
         "models": [
             {
                 "id": "default",
@@ -152,6 +160,7 @@ def test_run_review_rule_uses_selected_model_and_extra_params(tmp_path, monkeypa
         "enable_thinking": False,
         "thinking_budget": 128,
     }
+    assert json.loads(captured["env"]["REVIEW_RULE_BUILTIN_VARIABLES"])[0]["token"] == "当前日期"
 
 
 def test_run_verify_extraction_passes_dashscope_extra_body(monkeypatch, tmp_path):

@@ -4,6 +4,17 @@ import { emitEvent } from './eventBus.js'
 const POLL_INTERVAL_MS = 1000
 const MAX_POLL_ERRORS = 3
 
+export class TaskCancelledError extends Error {
+  constructor(message = '已停止生成') {
+    super(message)
+    this.name = 'TaskCancelledError'
+  }
+}
+
+export function isTaskCancelledError(error) {
+  return error instanceof TaskCancelledError || error?.name === 'TaskCancelledError'
+}
+
 export function diffTaskLogs(offset, logs) {
   const safeOffset = Math.max(0, Math.min(offset, logs.length))
   return {
@@ -15,6 +26,9 @@ export function diffTaskLogs(offset, logs) {
 export function unwrapTaskResult(task) {
   if (task.status === 'failed') {
     throw new Error(task.error || 'Task failed')
+  }
+  if (task.status === 'cancelled') {
+    throw new TaskCancelledError(task.error || '已停止生成')
   }
   return task.result
 }
@@ -50,9 +64,11 @@ export async function waitForTask(taskId, eventName = 'skill-log') {
 
     const diff = diffTaskLogs(offset, logPayload.logs || [])
     offset = diff.nextOffset
-    diff.lines.forEach((line) => emitEvent(eventName, line))
+    if (eventName) {
+      diff.lines.forEach((line) => emitEvent(eventName, line))
+    }
 
-    if (task.status === 'succeeded' || task.status === 'failed') {
+    if (task.status === 'succeeded' || task.status === 'failed' || task.status === 'cancelled') {
       return unwrapTaskResult(task)
     }
 
@@ -60,7 +76,15 @@ export async function waitForTask(taskId, eventName = 'skill-log') {
   }
 }
 
+export async function startTask(kind, payload) {
+  return apiClient.post(`/api/tasks/${kind}`, payload)
+}
+
+export async function cancelTask(taskId) {
+  return apiClient.post(`/api/task-runs/${taskId}/cancel`, {})
+}
+
 export async function runTask(kind, payload, eventName = 'skill-log') {
-  const task = await apiClient.post(`/api/tasks/${kind}`, payload)
+  const task = await startTask(kind, payload)
   return waitForTask(task.id, eventName)
 }

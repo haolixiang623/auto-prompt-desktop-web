@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 
-import { diffTaskLogs, unwrapTaskResult } from '../src/services/taskService.js'
+import { TaskCancelledError, diffTaskLogs, unwrapTaskResult } from '../src/services/taskService.js'
 import { getApiKeySaveState } from '../src/views/settingsState.js'
 
 test('diffTaskLogs returns only unseen lines from the latest offset', () => {
@@ -24,6 +24,13 @@ test('unwrapTaskResult returns the payload for succeeded tasks', () => {
   assert.deepEqual(
     unwrapTaskResult({ status: 'succeeded', error: null, result: payload }),
     payload,
+  )
+})
+
+test('unwrapTaskResult throws TaskCancelledError for cancelled tasks', () => {
+  assert.throws(
+    () => unwrapTaskResult({ status: 'cancelled', error: '已停止生成', result: null }),
+    (error) => error instanceof TaskCancelledError && /已停止生成/.test(error.message),
   )
 })
 

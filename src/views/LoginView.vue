@@ -42,19 +42,11 @@
         <div class="grid gap-3 text-sm text-slate-300">
           <label class="flex items-center gap-3 cursor-pointer">
             <input
-              v-model="rememberUsername"
-              type="checkbox"
-              class="h-4 w-4 rounded border-white/20 bg-slate-900 text-blue-500 focus:ring-blue-400"
-            />
-            <span>记住账号 1 天</span>
-          </label>
-          <label class="flex items-center gap-3 cursor-pointer">
-            <input
               v-model="rememberLogin"
               type="checkbox"
               class="h-4 w-4 rounded border-white/20 bg-slate-900 text-blue-500 focus:ring-blue-400"
             />
-            <span>记住登录 1 天</span>
+            <span>保持登录状态</span>
           </label>
         </div>
 
@@ -73,16 +65,13 @@
 
 <script setup>
 import { ref } from 'vue'
-import { useRoute } from 'vue-router'
 import { login } from '../services/authService.js'
 import { getRememberedUsername, setRememberedUsername } from '../services/authState.js'
 
-const route = useRoute()
 const rememberedUsername = getRememberedUsername()
 const username = ref(rememberedUsername)
 const password = ref('')
-const rememberUsername = ref(Boolean(rememberedUsername))
-const rememberLogin = ref(false)
+const rememberLogin = ref(Boolean(rememberedUsername))
 const submitting = ref(false)
 const errorMessage = ref('')
 
@@ -94,9 +83,8 @@ async function handleLogin() {
     await login(username.value, password.value, {
       rememberMe: rememberLogin.value
     })
-    setRememberedUsername(rememberUsername.value ? username.value : '')
-    const redirect = typeof route.query.redirect === 'string' ? route.query.redirect : '/'
-    window.location.replace(redirect)
+    setRememberedUsername(rememberLogin.value ? username.value : '')
+    window.location.replace('/')
   } catch (error) {
     errorMessage.value = String(error?.message || error || '登录失败')
   } finally {

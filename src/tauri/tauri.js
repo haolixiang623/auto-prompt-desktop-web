@@ -145,7 +145,7 @@ export async function invoke(command, args = {}) {
   }
 
   if (command === 'open_classified_dir') {
-    apiClient.open('/api/browse', { path: `${args.workDir}/已分类材料` })
+    apiClient.open('/api/browse', { path: args.workDir })
     return null
   }
 

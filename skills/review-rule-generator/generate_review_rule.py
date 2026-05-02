@@ -47,6 +47,61 @@ def get_extra_params():
         standard['extra_body'] = body
     return standard
 
+
+DEFAULT_REVIEW_RULE_BUILTIN_VARIABLES = [
+    {
+        "id": "current_date",
+        "name": "当前日期",
+        "token": "当前日期",
+        "placeholder": "$系统变量:当前日期$",
+        "dataType": "date",
+        "description": "当前系统日期",
+    }
+]
+
+
+def normalize_review_rule_builtin_variable(raw):
+    if isinstance(raw, str):
+        raw = {"token": raw}
+    item = raw if isinstance(raw, dict) else {}
+    token = str(item.get("token") or item.get("name") or "").strip() or "当前日期"
+    name = str(item.get("name") or token).strip() or token
+    return {
+        "id": str(item.get("id") or re.sub(r"[^\w]+", "_", token.lower()).strip("_") or "builtin_variable").strip(),
+        "name": name,
+        "token": token,
+        "placeholder": str(item.get("placeholder") or f"$系统变量:{name}$").strip() or f"$系统变量:{name}$",
+        "dataType": str(item.get("dataType") or item.get("type") or "string").strip() or "string",
+        "description": str(item.get("description") or "").strip(),
+    }
+
+
+def load_review_rule_builtin_variables():
+    raw = os.environ.get("REVIEW_RULE_BUILTIN_VARIABLES", "")
+    if raw:
+        try:
+            parsed = json.loads(raw)
+        except Exception:
+            parsed = None
+    else:
+        parsed = None
+    if not isinstance(parsed, list) or not parsed:
+        parsed = DEFAULT_REVIEW_RULE_BUILTIN_VARIABLES
+    normalized = []
+    seen = set()
+    for item in parsed:
+        built_in = normalize_review_rule_builtin_variable(item)
+        token = built_in["token"]
+        if token in seen:
+            continue
+        seen.add(token)
+        normalized.append(built_in)
+    return normalized or [normalize_review_rule_builtin_variable(DEFAULT_REVIEW_RULE_BUILTIN_VARIABLES[0])]
+
+
+REVIEW_RULE_BUILTIN_VARIABLES = load_review_rule_builtin_variables()
+REVIEW_RULE_BUILTIN_VARIABLE_MAP = {item["token"]: item for item in REVIEW_RULE_BUILTIN_VARIABLES}
+
 # ─────────────────────────── Excel 读取 ─────────────────────────────
 
 def read_review_rules_from_excel(excel_path):
@@ -82,6 +137,7 @@ def read_review_rules_from_excel(excel_path):
             return -1
 
         IDX_MATERIAL    = find_col(["材料名称"])
+        IDX_FACTOR      = find_col(["要素字段名称", "要素名称"])
         IDX_KPNAME      = find_col(["审查要点名称"])
         IDX_RULE_DESC   = find_col(["审查要点规则说明"])
         IDX_PASS        = find_col(["审查通过标准回答"])
@@ -117,6 +173,10 @@ def read_review_rules_from_excel(excel_path):
             if not kpname:
                 continue
 
+            factor_name = ""
+            if IDX_FACTOR >= 0 and IDX_FACTOR < len(row) and row[IDX_FACTOR]:
+                factor_name = str(row[IDX_FACTOR]).strip()
+
             rule_desc = ""
             if IDX_RULE_DESC >= 0 and IDX_RULE_DESC < len(row) and row[IDX_RULE_DESC]:
                 rule_desc = str(row[IDX_RULE_DESC]).strip()
@@ -146,6 +206,7 @@ def read_review_rules_from_excel(excel_path):
 
             result.setdefault(current_material, [])
             result[current_material].append({
+                "factor_name": factor_name,
                 "kpname": kpname,
                 "rule_desc": rule_desc,
                 "passreason": passreason,
@@ -167,12 +228,64 @@ def read_review_rules_from_excel(excel_path):
 # ─────────────────────────── 要素引用解析 ─────────────────────────────
 
 FACTOR_REF_PATTERN = re.compile(r'#([^#-]+)-([^#]+)#')
+PLACEHOLDER_PATTERN = re.compile(r'#([^#\n]+)#')
+
+
+def is_builtin_variable_token(token):
+    return str(token or "").strip() in REVIEW_RULE_BUILTIN_VARIABLE_MAP
+
+
+def get_builtin_variable(token):
+    return REVIEW_RULE_BUILTIN_VARIABLE_MAP.get(str(token or "").strip())
+
+
+def extract_review_refs(text):
+    """按出现顺序提取规则中的引用，支持 factor 和 builtin variable。"""
+    refs = []
+    if not text:
+        return refs
+    for match in PLACEHOLDER_PATTERN.finditer(text):
+        token = match.group(1).strip()
+        factor_match = re.fullmatch(r'([^#\n-]+)-([^#\n]+)', token)
+        if factor_match:
+            refs.append({
+                "kind": "factor",
+                "token": token,
+                "material": factor_match.group(1).strip(),
+                "field": factor_match.group(2).strip(),
+            })
+            continue
+        builtin = get_builtin_variable(token)
+        if builtin:
+            refs.append({
+                "kind": "builtin",
+                "token": token,
+                "name": builtin["name"],
+                "placeholder": builtin["placeholder"],
+                "dataType": builtin["dataType"],
+            })
+            continue
+        refs.append({
+            "kind": "invalid",
+            "token": token,
+        })
+    return refs
 
 def extract_factor_refs(text):
     """从 #材料-字段# 格式中提取 [(材料名称, 字段名称), ...] 列表"""
-    if not text:
-        return []
-    return [(m.group(1).strip(), m.group(2).strip()) for m in FACTOR_REF_PATTERN.finditer(text)]
+    return [
+        (ref["material"], ref["field"])
+        for ref in extract_review_refs(text)
+        if ref["kind"] == "factor"
+    ]
+
+
+def extract_builtin_refs(text):
+    return [
+        ref
+        for ref in extract_review_refs(text)
+        if ref["kind"] == "builtin"
+    ]
 
 
 def refs_to_factor_placeholders(refs):
@@ -187,9 +300,23 @@ def make_factor_placeholder(material_name, field_name):
     return f"${mat}:{field}$"
 
 
+def replace_rule_refs_with_placeholders(text):
+    def _replace(match):
+        token = match.group(1).strip()
+        factor_match = re.fullmatch(r'([^#\n-]+)-([^#\n]+)', token)
+        if factor_match:
+            return make_factor_placeholder(factor_match.group(1).strip(), factor_match.group(2).strip())
+        builtin = get_builtin_variable(token)
+        if builtin:
+            return builtin["placeholder"]
+        return match.group(0)
+
+    return PLACEHOLDER_PATTERN.sub(_replace, text or "")
+
+
 # ─────────────────────────── 规则类型推断 ─────────────────────────────
 
-def infer_review_rule_local(rule_desc, special_note=""):
+def infer_review_rule_local(rule_desc, special_note="", factor_name=""):
     """本地推断审查规则类型 (不依赖LLM)。
 
     推断逻辑:
@@ -205,10 +332,12 @@ def infer_review_rule_local(rule_desc, special_note=""):
     """
     combined = (rule_desc or "") + " " + (special_note or "")
 
-    refs = extract_factor_refs(combined)
+    refs = extract_review_refs(combined)
+    factor_refs = [ref for ref in refs if ref["kind"] == "factor"]
+    builtin_refs = [ref for ref in refs if ref["kind"] == "builtin"]
 
     # 含引用时进一步判断
-    if refs:
+    if factor_refs or builtin_refs:
         groovy_keywords = ["计算", "天数", "月份", "工作日", "算法", "正则", "公式", "统计", "求和", "截取", "substring"]
         for kw in groovy_keywords:
             if kw in combined:
@@ -223,8 +352,11 @@ def infer_review_rule_local(rule_desc, special_note=""):
             if kw in combined:
                 return "2"
 
-        # 有引用但不明确 -> 默认规则对比
-        return "2"
+        if factor_refs:
+            return "2"
+        if builtin_refs and factor_name:
+            return "2"
+        return "1"
 
     # 无引用 -> 大模型
     return "1"
@@ -286,6 +418,11 @@ def call_llm_for_rule(kpname, rule_desc, material_name, api_key, base_url, model
         import urllib.request
         import urllib.error
 
+        builtin_lines = "\n".join(
+            f"- `#{item['token']}#` 表示内置变量，转换时使用 `{item['placeholder']}`，比较对象类型填 `variable`"
+            for item in REVIEW_RULE_BUILTIN_VARIABLES
+        )
+
         prompt = f"""你是一个审查规则分析专家。请根据以下审查要点规则说明，生成符合导入规范的审查规则JSON。
 
 ## 审查背景
@@ -295,6 +432,8 @@ def call_llm_for_rule(kpname, rule_desc, material_name, api_key, base_url, model
 
 ## 规则格式说明
 - `#材料名称-字段名称#` 表示引用该材料下的某个要素，转换时用 `$材料名称:字段名称$` 格式
+- 内置变量说明：
+{builtin_lines or '- 当前未配置内置变量'}
 - review_rule: "1"=大模型(LLM), "2"=规则对比, "3"=Groovy脚本
 
 ## 判断逻辑
@@ -408,23 +547,51 @@ def call_llm_for_rule(kpname, rule_desc, material_name, api_key, base_url, model
 
 # ─────────────────────────── 规则构建 ─────────────────────────────
 
-def build_keypoint_rule2(kpname, rule_desc, passreason, nopassreason, material_name, ordernum, exclude_situations):
+def build_keypoint_rule2(kpname, rule_desc, passreason, nopassreason, material_name, ordernum, exclude_situations, factor_name=""):
     """构建 review_rule="2" (规则对比) 的要点JSON。"""
-    refs = extract_factor_refs(rule_desc)
+    refs = [ref for ref in extract_review_refs(rule_desc) if ref["kind"] != "invalid"]
+    factor_refs = [ref for ref in refs if ref["kind"] == "factor"]
+    builtin_refs = [ref for ref in refs if ref["kind"] == "builtin"]
 
     if not refs:
         # 无引用但被判断为2 -> 降级为1
         return build_keypoint_rule1(kpname, rule_desc, passreason, nopassreason, material_name, ordernum, exclude_situations)
 
+    def current_factor_ref():
+        if not factor_name:
+            return None
+        return {
+            "kind": "factor",
+            "token": f"{material_name}-{factor_name}",
+            "material": material_name,
+            "field": factor_name,
+        }
+
+    def placeholder_of(ref):
+        if ref["kind"] == "builtin":
+            return ref["placeholder"]
+        return make_factor_placeholder(ref["material"], ref["field"])
+
+    def element_type_of(ref):
+        if ref["kind"] == "builtin":
+            return "variable"
+        system_carriers = {"常规信息", "法人信息", "自然人信息"}
+        return "variable" if ref["material"] in system_carriers else "factor"
+
+    def tuple_ref(ref):
+        if ref["kind"] == "builtin":
+            return ("系统变量", ref["name"])
+        return (ref["material"], ref["field"])
+
     # 分析比较关系
     conditions = []
     groups = []
 
-    if len(refs) == 1:
+    if len(refs) == 1 and refs[0]["kind"] == "factor":
         # 单要素: 非空检查
-        mat, field = refs[0]
+        mat, field = refs[0]["material"], refs[0]["field"]
         placeholder = make_factor_placeholder(mat, field)
-        operator, data_type, sr, delimiter = infer_operator_and_type(rule_desc, refs[0])
+        operator, data_type, sr, delimiter = infer_operator_and_type(rule_desc, (mat, field))
 
         if operator in ("notblank", "blank"):
             cond = {
@@ -471,18 +638,13 @@ def build_keypoint_rule2(kpname, rule_desc, passreason, nopassreason, material_n
             "conditions": conditions,
         })
 
-    elif len(refs) == 2:
-        # 双要素比较
-        mat_a, field_a = refs[0]
-        mat_b, field_b = refs[1]
-        placeholder_a = make_factor_placeholder(mat_a, field_a)
-        placeholder_b = make_factor_placeholder(mat_b, field_b)
+    elif len(factor_refs) == 1 and len(builtin_refs) == 1:
+        factor_ref = factor_refs[0]
+        builtin_ref = builtin_refs[0]
+        placeholder_a = placeholder_of(factor_ref)
+        placeholder_b = placeholder_of(builtin_ref)
 
-        operator, data_type, sr, delimiter = infer_operator_and_type(rule_desc, refs[0], refs[1])
-
-        # 判断 elementB 是否为系统变量
-        system_carriers = {"常规信息", "法人信息", "自然人信息"}
-        elem_b_type = "variable" if mat_b in system_carriers else "factor"
+        operator, data_type, sr, delimiter = infer_operator_and_type(rule_desc, tuple_ref(factor_ref), tuple_ref(builtin_ref))
 
         cond = {
             "elementA": placeholder_a,
@@ -491,7 +653,7 @@ def build_keypoint_rule2(kpname, rule_desc, passreason, nopassreason, material_n
             "operator": operator,
             "dataType": data_type,
             "elementB": placeholder_b,
-            "elementBType": elem_b_type,
+            "elementBType": "variable",
             "elementBDisplay": placeholder_b,
             "logicToNext": None,
             "stringReplacements": sr,
@@ -499,30 +661,76 @@ def build_keypoint_rule2(kpname, rule_desc, passreason, nopassreason, material_n
             "arrayKeys": None,
         }
         conditions.append(cond)
-
-        # 生成 groupFailReason
-        if operator == "eq":
-            group_fail = nopassreason or ""
-        elif operator in ("ge", "gt"):
-            group_fail = nopassreason or ""
-        elif operator in ("le", "lt"):
-            group_fail = nopassreason or ""
-        elif operator == "contains":
-            group_fail = nopassreason or ""
-        else:
-            group_fail = nopassreason or ""
-
         groups.append({
             "logicToNext": None,
-            "groupFailReason": group_fail,
+            "groupFailReason": nopassreason or "",
+            "conditions": conditions,
+        })
+
+    elif len(factor_refs) == 0 and len(builtin_refs) == 1 and current_factor_ref():
+        factor_ref = current_factor_ref()
+        builtin_ref = builtin_refs[0]
+        placeholder_a = placeholder_of(factor_ref)
+        placeholder_b = placeholder_of(builtin_ref)
+
+        operator, data_type, sr, delimiter = infer_operator_and_type(rule_desc, tuple_ref(factor_ref), tuple_ref(builtin_ref))
+        cond = {
+            "elementA": placeholder_a,
+            "elementAType": "factor",
+            "elementADisplay": placeholder_a,
+            "operator": operator,
+            "dataType": data_type,
+            "elementB": placeholder_b,
+            "elementBType": "variable",
+            "elementBDisplay": placeholder_b,
+            "logicToNext": None,
+            "stringReplacements": sr,
+            "delimiter": delimiter,
+            "arrayKeys": None,
+        }
+        conditions.append(cond)
+        groups.append({
+            "logicToNext": None,
+            "groupFailReason": nopassreason or "",
+            "conditions": conditions,
+        })
+
+    elif len(refs) == 2 and len(factor_refs) == 2:
+        # 双要素比较
+        ref_a, ref_b = refs[0], refs[1]
+        placeholder_a = placeholder_of(ref_a)
+        placeholder_b = placeholder_of(ref_b)
+
+        operator, data_type, sr, delimiter = infer_operator_and_type(rule_desc, tuple_ref(ref_a), tuple_ref(ref_b))
+
+        cond = {
+            "elementA": placeholder_a,
+            "elementAType": element_type_of(ref_a),
+            "elementADisplay": placeholder_a,
+            "operator": operator,
+            "dataType": data_type,
+            "elementB": placeholder_b,
+            "elementBType": element_type_of(ref_b),
+            "elementBDisplay": placeholder_b,
+            "logicToNext": None,
+            "stringReplacements": sr,
+            "delimiter": delimiter,
+            "arrayKeys": None,
+        }
+        conditions.append(cond)
+        groups.append({
+            "logicToNext": None,
+            "groupFailReason": nopassreason or "",
             "conditions": conditions,
         })
 
     else:
+        if builtin_refs:
+            return build_keypoint_rule1(kpname, rule_desc, passreason, nopassreason, material_name, ordernum, exclude_situations)
         # 多要素: 逐对构建多组或多条件
-        for i, (mat, field) in enumerate(refs):
-            placeholder = make_factor_placeholder(mat, field)
-            operator, data_type, sr, delimiter = infer_operator_and_type(rule_desc, (mat, field))
+        for i, ref in enumerate(factor_refs):
+            placeholder = placeholder_of(ref)
+            operator, data_type, sr, delimiter = infer_operator_and_type(rule_desc, tuple_ref(ref))
             is_last = (i == len(refs) - 1)
 
             if operator in ("notblank", "blank"):
@@ -556,8 +764,6 @@ def build_keypoint_rule2(kpname, rule_desc, passreason, nopassreason, material_n
                     "arrayKeys": None,
                 }
             conditions.append(cond)
-
-        fields_desc = "、".join([f"{m}:{f}" for m, f in refs])
         group_fail = nopassreason or ""
         groups.append({
             "logicToNext": None,
@@ -584,11 +790,8 @@ def build_keypoint_rule2(kpname, rule_desc, passreason, nopassreason, material_n
 
 def build_keypoint_rule1(kpname, rule_desc, passreason, nopassreason, material_name, ordernum, exclude_situations):
     """构建 review_rule="1" (大模型LLM) 的要点JSON。"""
-    # 将 #材料-字段# 转换为 $材料:字段$ 格式用于LLM提示词
-    content = FACTOR_REF_PATTERN.sub(
-        lambda m: make_factor_placeholder(m.group(1).strip(), m.group(2).strip()),
-        rule_desc or ""
-    )
+    # 将 #材料-字段# 和 #内置变量# 转换为统一占位符格式用于LLM提示词
+    content = replace_rule_refs_with_placeholders(rule_desc or "")
     if not content:
         content = f"请审查{material_name}中的{kpname}是否符合要求。"
 
@@ -605,19 +808,40 @@ def build_keypoint_rule1(kpname, rule_desc, passreason, nopassreason, material_n
     }
 
 
-def build_keypoint_rule3(kpname, rule_desc, passreason, nopassreason, material_name, ordernum, exclude_situations):
+def build_keypoint_rule3(kpname, rule_desc, passreason, nopassreason, material_name, ordernum, exclude_situations, factor_name=""):
     """构建 review_rule="3" (Groovy脚本) 的要点JSON。"""
-    refs = extract_factor_refs(rule_desc)
+    refs = [ref for ref in extract_review_refs(rule_desc) if ref["kind"] != "invalid"]
+    factor_refs = [ref for ref in refs if ref["kind"] == "factor"]
+    builtin_refs = [ref for ref in refs if ref["kind"] == "builtin"]
+    if not factor_refs and factor_name:
+        factor_refs = [{
+            "kind": "factor",
+            "token": f"{material_name}-{factor_name}",
+            "material": material_name,
+            "field": factor_name,
+        }]
 
     # 生成基础Groovy脚本模板
-    if refs:
+    if factor_refs or builtin_refs:
         input_lines = "\n".join([
-            f'def {_sanitize_var(field)} = input.get("{str(mat).replace("：", ":").strip()}:{str(field).replace("：", ":").strip()}")'
-            for mat, field in refs
+            f'def {_sanitize_var(ref["field"])} = input.get("{str(ref["material"]).replace("：", ":").strip()}:{str(ref["field"]).replace("：", ":").strip()}")'
+            for ref in factor_refs
         ])
-        var_checks = " || ".join([f'{_sanitize_var(field)} == null' for _, field in refs])
+        builtin_lines = "\n".join([
+            f'def {_sanitize_var(ref["name"])} = input.get("系统变量:{str(ref["name"]).replace("：", ":").strip()}")'
+            for ref in builtin_refs
+        ])
+        lines = "\n".join(filter(None, [input_lines, builtin_lines]))
+        check_names = [
+            _sanitize_var(ref["field"])
+            for ref in factor_refs
+        ] + [
+            _sanitize_var(ref["name"])
+            for ref in builtin_refs
+        ]
+        var_checks = " || ".join([f"{name} == null" for name in check_names]) or "false"
         script = (
-            f"{input_lines}\n"
+            f"{lines}\n"
             f"if ({var_checks}) {{\n"
             f'    return [pass: false, reason: "必要字段未识别到"]\n'
             f"}}\n"
@@ -707,6 +931,7 @@ def process_material_rules(material_name, keypoints_info, use_llm=False,
         kp_start_time = time.time()
         kpname = kp["kpname"]
         rule_desc = kp["rule_desc"]
+        factor_name = kp.get("factor_name", "")
         passreason = kp["passreason"]
         nopassreason = kp["nopassreason"]
         ordernum = kp["ordernum"]
@@ -747,18 +972,18 @@ def process_material_rules(material_name, keypoints_info, use_llm=False,
                 continue
 
         # 本地推断
-        review_rule = infer_review_rule_local(rule_desc, special_note)
+        review_rule = infer_review_rule_local(rule_desc, special_note, factor_name=factor_name)
         print(f"         [本地推断] -> review_rule={review_rule}")
 
         if review_rule == "2":
             kp_json = build_keypoint_rule2(
                 kpname, rule_desc, passreason, nopassreason,
-                material_name, ordernum, exclude_situations
+                material_name, ordernum, exclude_situations, factor_name=factor_name
             )
         elif review_rule == "3":
             kp_json = build_keypoint_rule3(
                 kpname, rule_desc, passreason, nopassreason,
-                material_name, ordernum, exclude_situations
+                material_name, ordernum, exclude_situations, factor_name=factor_name
             )
         else:
             kp_json = build_keypoint_rule1(

@@ -61,3 +61,41 @@ def test_process_material_rules_uses_excel_reason_over_llm(monkeypatch):
 
     assert keypoints[0]["passreason"] == "来自Excel通过"
     assert keypoints[0]["nopassreason"] == "来自Excel不通过"
+
+
+def test_process_material_rules_builds_variable_condition_for_builtin_date():
+    keypoints = generate_review_rule.process_material_rules(
+        material_name="营业证照",
+        keypoints_info=[
+            {
+                "factor_name": "有效期月份",
+                "kpname": "月份校验",
+                "rule_desc": "需要晚于#当前日期#的月份",
+                "passreason": "",
+                "nopassreason": "",
+                "ordernum": None,
+                "exclude_situations": "",
+                "special_note": "",
+            }
+        ],
+        use_llm=False,
+    )
+
+    result = keypoints[0]
+    assert result["review_rule"] == "3"
+    assert 'input.get("营业证照:有效期月份")' in result["review_rule_js"]
+    assert 'input.get("系统变量:当前日期")' in result["review_rule_js"]
+
+
+def test_build_keypoint_rule1_replaces_builtin_variable_placeholder():
+    result = generate_review_rule.build_keypoint_rule1(
+        kpname="月份校验",
+        rule_desc="需要晚于#当前日期#的月份",
+        passreason="",
+        nopassreason="",
+        material_name="营业证照",
+        ordernum=None,
+        exclude_situations="",
+    )
+
+    assert "$系统变量:当前日期$" in result["content"]

@@ -3,6 +3,7 @@ import csv
 import base64
 import json
 import re
+from datetime import datetime
 from pathlib import Path
 
 try:
@@ -19,6 +20,49 @@ _DASHSCOPE_BODY_PARAMS = {
     'vl_high_resolution_images', 'search_options',
 }
 
+
+DEFAULT_ANALYSIS_PROMPT_TEMPLATE = """请仔细分析这张图片，识别以下要素的内容：
+{{factor_list}}
+
+对于每个要素，请提取其在图片中的实际值。如果某个要素不存在，请说明。
+请以JSON格式返回，格式如下：
+{
+  "factors": [
+    {"name": "要素名称", "value": "识别到的值", "exists": true}
+  ]
+}"""
+
+
+DEFAULT_RULE_PROMPT_TEMPLATE = """基于以下要素识别结果和用户提供的说明，为每个要素生成精准的提取规则和格式要求。
+
+要素列表及说明：
+{{factor_context}}
+
+识别结果（仅用于理解要素的位置和上下文，不得将具体数值写入规则）：
+{{analysis_result}}
+
+请为每个要素生成：
+1. **提取规则**：描述如何在同类文档中定位和识别该要素（结合用户提供的提取说明和规则说明）
+2. **格式要求**：描述提取后的格式处理要求（参考用户的规则说明）
+
+**泛化要求（重要）**：
+- 提取规则必须具备通用性，适用于同类型的所有文档，而不仅针对本次识别到的具体文档
+- 禁止在规则中出现具体的数值、金额、日期、名称、编号等特定文档才有的内容
+- 规则描述应基于要素的结构特征和位置规律（如"位于文档抬头"、"表格第X列"、"盖章处下方"等）
+- 可描述数据类型特征（如"数字"、"日期格式"、"中文名称"），但不能写具体值
+- 格式要求要明确，参考用户的规则说明，如果不需要格式处理则说明"保持原格式"
+
+请以JSON格式返回：
+{
+  "factors": [
+    {
+      "name": "要素名称",
+      "rule": "通用的提取规则描述（不含具体值）",
+      "format": "格式要求描述"
+    }
+  ]
+}"""
+
 def get_extra_params():
     """读取桌面端传入的额外模型参数，拆分为标准参数和 DashScope 专有参数(extra_body)"""
     raw = os.environ.get("GENERATE_EXTRA_PARAMS", "{}")
@@ -31,6 +75,44 @@ def get_extra_params():
     if body:
         standard['extra_body'] = body
     return standard
+
+
+def get_case_library_enabled():
+    raw = str(os.environ.get("GENERATE_USE_CASE_LIBRARY", "1")).strip().lower()
+    return raw not in {"0", "false", "no", "off"}
+
+
+def get_rule_profile():
+    raw = os.environ.get("GENERATE_RULE_PROFILE_JSON", "").strip()
+    if not raw:
+        return {}
+    try:
+        profile = json.loads(raw)
+    except Exception:
+        return {}
+    return profile if isinstance(profile, dict) else {}
+
+
+def render_profile_template(template_text, replacements):
+    rendered = str(template_text or "")
+    values = {key: str(value) for key, value in (replacements or {}).items()}
+    factor_list = values.get("factor_list")
+    factor_context = values.get("factor_context")
+    if factor_list and "factor_context" not in values:
+        values["factor_context"] = factor_list
+    if factor_context and "factor_list" not in values:
+        values["factor_list"] = factor_context
+    for key, value in values.items():
+        rendered = rendered.replace(f"{{{{{key}}}}}", value)
+    return rendered
+
+
+def compose_factor_prompt(rule_text, format_text=""):
+    rule = str(rule_text or "").strip()
+    fmt = str(format_text or "").strip()
+    if rule and fmt:
+        return f"{rule}，{fmt}"
+    return rule or fmt
 
 def load_template(template_path):
     """加载模板文件，优先使用工作目录的模板，否则使用 skill 目录的默认模板"""
@@ -370,16 +452,11 @@ def analyze_image_with_qwen(client, factors, image_paths):
             factor_desc += f"（{factor['rule_desc']}）"
         factor_list.append(factor_desc)
     
-    analysis_prompt = f"""请仔细分析这张图片，识别以下要素的内容：
-{chr(10).join(factor_list)}
-
-对于每个要素，请提取其在图片中的实际值。如果某个要素不存在，请说明。
-请以JSON格式返回，格式如下：
-{{
-  "factors": [
-    {{"name": "要素名称", "value": "识别到的值", "exists": true}}
-  ]
-}}"""
+    profile = get_rule_profile()
+    analysis_prompt = render_profile_template(
+        profile.get("analysisPromptTemplate") or DEFAULT_ANALYSIS_PROMPT_TEMPLATE,
+        {"factor_list": chr(10).join(factor_list)},
+    )
     
     # 逐张分析，合并结果（已找到的要素不再被后续图片覆盖为不存在）
     merged = {}  # factor_name -> result_dict
@@ -452,8 +529,8 @@ def generate_smart_rules(client, factors, analysis_result):
     """让 Qwen 根据识别结果和CSV上下文生成智能提取规则（具备泛化能力）"""
     print("\n[步骤2] 正在生成智能提取规则...")
 
-    # 从环境变量读取造物主提示词（要素提取专用）
-    god_prompt = os.environ.get("EXTRACT_GOD_PROMPT", "").strip()
+    profile = get_rule_profile()
+    god_prompt = str(profile.get("systemPrompt") or os.environ.get("EXTRACT_GOD_PROMPT", "")).strip()
 
     # 构建带上下文的要素列表
     factor_context = []
@@ -465,35 +542,13 @@ def generate_smart_rules(client, factors, analysis_result):
             context += f"\n   规则说明: {factor['rule_desc']}"
         factor_context.append(context)
 
-    rule_prompt = f"""基于以下要素识别结果和用户提供的说明，为每个要素生成精准的提取规则和格式要求。
-
-要素列表及说明：
-{chr(10).join(factor_context)}
-
-识别结果（仅用于理解要素的位置和上下文，不得将具体数值写入规则）：
-{analysis_result}
-
-请为每个要素生成：
-1. **提取规则**：描述如何在同类文档中定位和识别该要素（结合用户提供的提取说明和规则说明）
-2. **格式要求**：描述提取后的格式处理要求（参考用户的规则说明）
-
-**泛化要求（重要）**：
-- 提取规则必须具备通用性，适用于同类型的所有文档，而不仅针对本次识别到的具体文档
-- 禁止在规则中出现具体的数值、金额、日期、名称、编号等特定文档才有的内容
-- 规则描述应基于要素的结构特征和位置规律（如"位于文档抬头"、"表格第X列"、"盖章处下方"等）
-- 可描述数据类型特征（如"数字"、"日期格式"、"中文名称"），但不能写具体值
-- 格式要求要明确，参考用户的规则说明，如果不需要格式处理则说明"保持原格式"
-
-请以JSON格式返回：
-{{
-  "factors": [
-    {{
-      "name": "要素名称",
-      "rule": "通用的提取规则描述（不含具体值）",
-      "format": "格式要求描述"
-    }}
-  ]
-}}"""
+    rule_prompt = render_profile_template(
+        profile.get("generationPromptTemplate") or DEFAULT_RULE_PROMPT_TEMPLATE,
+        {
+            "factor_context": chr(10).join(factor_context),
+            "analysis_result": analysis_result,
+        },
+    )
 
     # 构建消息：若有造物主提示词则作为 system 消息
     if god_prompt:
@@ -656,6 +711,7 @@ def main():
     
     template_path = os.path.join(current_dir, 'template.txt')
     output_path = os.path.join(current_dir, f"{dir_name}--要素提取完整提示词.txt")
+    artifact_path = os.path.join(current_dir, f"{dir_name}--要素提示词.json")
     
     try:
         print("="*60)
@@ -671,12 +727,12 @@ def main():
         factor_names = [f['name'] for f in factors]
         print(f"\n✓ 成功解析文件，共 {len(factors)} 个要素: {', '.join(factor_names)}")
         
-        # 2. 优先从提示词库精确匹配（按事项+材料+要素名称）
-        #    item_name = 上级目录名（即事项文件夹名）
+        use_case_library = get_case_library_enabled()
+        profile = get_rule_profile()
         item_name = os.environ.get("ITEM_NAME", "")
         if not item_name and material_name:
             item_name = os.path.basename(os.path.dirname(current_dir))
-        db_matched = lookup_cases_from_db(factors, item_name, material_name or dir_name)
+        db_matched = lookup_cases_from_db(factors, item_name, material_name or dir_name) if use_case_library else {}
         
         factors_with_rules = []
         remaining_factors = []
@@ -693,12 +749,15 @@ def main():
                     'format': '',
                     'case_matched': True,
                     'db_matched': True,
+                    'source': 'case_library',
                 })
             else:
                 remaining_factors.append(factor)
         
         if db_matched:
             print(f"\n✓ 提示词库精确命中 {len(db_matched)} 个要素，剩余 {len(remaining_factors)} 个需进一步处理")
+        elif not use_case_library:
+            print("\n[提示词库] 已关闭本次提示词库复用，将全部按未命中策略处理")
         
         # 4. 对未命中的要素，直接走 AI 生成流程
         if not remaining_factors:
@@ -743,6 +802,8 @@ def main():
                 return 1
             
             # 合并AI生成的规则
+            for factor in ai_generated_factors:
+                factor['source'] = 'ai_generated'
             factors_with_rules.extend(ai_generated_factors)
             
             print(f"\n✓ 成功生成 {len(ai_generated_factors)} 个AI智能提取规则")
@@ -764,7 +825,7 @@ def main():
         print(f"  - AI生成规则: {ai_format_count}")
         
         # 7. 加载模板并组装提示词
-        template_text = load_template(template_path)
+        template_text = str(profile.get("promptTemplate") or "").strip() or load_template(template_path)
         factors_text = generate_factors_text(factors_with_rules)
         final_prompt = build_prompt(template_text, factors_text)
         
@@ -772,6 +833,33 @@ def main():
         with open(output_path, 'w', encoding='utf-8') as f:
             f.write(final_prompt)
         print(f"\n✓ 智能提示词已保存至: {output_path}")
+
+        artifact = {
+            "version": "1",
+            "carriername": material_name or dir_name,
+            "template": {
+                "prompt_template": template_text,
+            },
+            "meta": {
+                "useCaseLibrary": use_case_library,
+                "ruleProfileId": str(profile.get("id") or "").strip(),
+                "generatedAt": datetime.utcnow().isoformat() + "Z",
+            },
+            "factors": [
+                {
+                    "index": factor["index"],
+                    "factorname": factor["name"],
+                    "factortype": "1",
+                    "factoruse": factor.get("extract_desc", ""),
+                    "factor_prompt": compose_factor_prompt(factor.get("rule", ""), factor.get("format", "")),
+                    "source": factor.get("source") or ("case_library" if factor.get("db_matched") else "ai_generated"),
+                }
+                for factor in factors_with_rules
+            ],
+        }
+        with open(artifact_path, 'w', encoding='utf-8') as f:
+            json.dump(artifact, f, ensure_ascii=False, indent=2)
+        print(f"✓ 要素提示词 JSON 已保存至: {artifact_path}")
         
         # 9. 最终验证（仅当有图片和客户端时验证）
         if need_ai_generation:

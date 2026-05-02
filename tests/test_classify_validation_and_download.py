@@ -6,7 +6,7 @@ import httpx
 import pytest
 
 from pyserver.app import main
-from pyserver.app.main import app, validate_classify_workspace
+from pyserver.app.main import app, validate_workspace_bundle
 
 
 async def login(client: httpx.AsyncClient) -> str:
@@ -28,24 +28,32 @@ def _bootstrap_env(tmp_path, monkeypatch):
     return repo_root, data_dir
 
 
-def test_validate_classify_workspace_accepts_missing_classified_dir(tmp_path, monkeypatch):
+def test_validate_classify_workspace_uses_shared_workspace_rules(tmp_path, monkeypatch):
     repo_root, _ = _bootstrap_env(tmp_path, monkeypatch)
     work_dir = repo_root / "workspace"
-    pending_dir = work_dir / "待分类材料"
-    pending_dir.mkdir(parents=True, exist_ok=True)
-    (pending_dir / "a.jpg").write_bytes(b"fake")
-    (work_dir / "factors.csv").write_text("事项名称,材料名称,字段\n事项A,材料A,字段A\n", encoding="utf-8")
+    material_dir = work_dir / "材料A"
+    material_dir.mkdir(parents=True, exist_ok=True)
+    (material_dir / "a.jpg").write_bytes(b"fake")
 
-    monkeypatch.setattr(main, "read_factors_script", lambda _paths, _dir: [{"material": "材料A"}])
+    wb_path = work_dir / "factors.xlsx"
+    from openpyxl import Workbook
+
+    wb = Workbook()
+    ws = wb.active
+    ws.append(["材料名称", "要素字段名称", "要素提取说明", "审查要点名称", "审查要点规则说明"])
+    ws.append(["材料A", "字段A", "字段说明", "字段A校验", "#材料A-字段A#不能为空"])
+    wb.save(wb_path)
+    wb.close()
+
     paths = type("Paths", (), {"repo_root": repo_root, "skills_dir": repo_root / "skills"})()
-    result = validate_classify_workspace(paths, str(work_dir))
+    result = validate_workspace_bundle(paths, str(work_dir))
 
     assert result["ok"] is True
-    assert any("自动创建" in msg for msg in result["warnings"])
+    assert result["errors"] == []
 
 
 @pytest.mark.asyncio
-async def test_classify_download_result_includes_prompts_and_report(tmp_path, monkeypatch):
+async def test_classify_download_result_includes_prompt_artifact_and_report(tmp_path, monkeypatch):
     repo_root, _ = _bootstrap_env(tmp_path, monkeypatch)
     transport = httpx.ASGITransport(app=app)
     async with app.router.lifespan_context(app):
@@ -60,9 +68,17 @@ async def test_classify_download_result_includes_prompts_and_report(tmp_path, mo
             workspace = workspace_resp.json()
             work_dir = Path(workspace["rootPath"])
 
-            classified = work_dir / "已分类材料" / "材料A"
-            classified.mkdir(parents=True, exist_ok=True)
-            (classified / "1.jpg").write_bytes(b"img")
+            material_dir = work_dir / "材料A"
+            material_dir.mkdir(parents=True, exist_ok=True)
+            (material_dir / "1.jpg").write_bytes(b"img")
+            from openpyxl import Workbook
+            wb = Workbook()
+            ws = wb.active
+            ws.append(["材料名称", "要素字段名称", "要素提取说明", "审查要点名称", "审查要点规则说明"])
+            ws.append(["材料A", "字段A", "字段说明", "字段A校验", "#材料A-字段A#不能为空"])
+            wb.save(work_dir / "factors.xlsx")
+            wb.close()
+            (work_dir / "材料分类提示词.json").write_text('{"version":"1"}', encoding="utf-8")
             (work_dir / "最新分类信息提取提示词.txt").write_text("extract", encoding="utf-8")
             (work_dir / "最新分类附件归集提示词.txt").write_text("aggregate", encoding="utf-8")
             (work_dir / "classification_report.json").write_text('{"ok":true}', encoding="utf-8")
@@ -78,7 +94,8 @@ async def test_classify_download_result_includes_prompts_and_report(tmp_path, mo
             with ZipFile(io.BytesIO(resp.content)) as zf:
                 names = set(zf.namelist())
 
-            assert "已分类材料/材料A/1.jpg" in names
+            assert "材料分类提示词.json" in names
             assert "最新分类信息提取提示词.txt" in names
             assert "最新分类附件归集提示词.txt" in names
             assert "classification_report.json" in names
+            assert "factors.xlsx" in names

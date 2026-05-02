@@ -8,17 +8,31 @@
     iconClass="text-green-600"
     iconPath="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4"
     module="review-rule"
+    :showDownload="true"
+    downloadLabel="下载结果ZIP"
+    :canDownload="canDownloadWorkspace"
     @open="handleOpen"
+    @download="handleDownload"
   />
 </template>
 
 <script setup>
 import { useRouter } from 'vue-router'
+import { apiClient } from '../services/apiClient.js'
 import WorkspaceListView from './WorkspaceListView.vue'
 
 const router = useRouter()
 
 function handleOpen(ws) {
   router.push({ path: '/review-rule/new', query: { workDir: ws.rootPath } })
+}
+
+function canDownloadWorkspace(ws) {
+  return ws?.genStatus === 'done'
+}
+
+function handleDownload(ws) {
+  if (!ws?.rootPath) return
+  apiClient.download('/api/review-rule/download-result', { workDir: ws.rootPath })
 }
 </script>

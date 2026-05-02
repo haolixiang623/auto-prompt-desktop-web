@@ -6,8 +6,8 @@
     <div class="w-56 flex-shrink-0 bg-white border-r flex flex-col">
       <!-- 标题 -->
       <div class="px-5 pt-6 pb-4 border-b">
-        <h1 class="text-base font-bold text-gray-900 leading-tight">材料自动分类</h1>
-        <p class="text-xs text-gray-400 mt-1 leading-relaxed">附件自动归集 + 人工审核</p>
+        <h1 class="text-base font-bold text-gray-900 leading-tight">材料分类提示词</h1>
+        <p class="text-xs text-gray-400 mt-1 leading-relaxed">基于材料样本生成可下载的分类提示词 JSON</p>
       </div>
 
       <!-- Step 列表 -->
@@ -75,7 +75,7 @@
         <div v-if="currentStep === 1" class="space-y-4">
           <div>
             <span class="text-lg font-bold text-gray-900">上传工作区与配置参数</span>
-            <p class="text-sm text-gray-500 mt-1">上传包含待分类材料的工作区，确认类别和文件后开始分类</p>
+            <p class="text-sm text-gray-500 mt-1">上传统一结构工作区，自动扫描一级材料目录下的全部样本附件并生成分类提示词</p>
           </div>
 
           <!-- 工作区选择 -->
@@ -89,26 +89,29 @@
                 上传文件夹...
               </button>
             </div>
-            <p class="text-xs text-gray-400 mt-2">工作区需包含：factors.xlsx、待分类材料/ 子目录、已分类材料/ 子目录</p>
+            <p class="text-xs text-gray-400 mt-2">工作区需包含：factors.xlsx，以及按材料名称建立的一级子目录；每个子目录下放样本图片或 PDF</p>
           </div>
 
           <div class="rounded-xl border border-blue-200 bg-blue-50 p-4">
-            <p class="text-sm font-semibold text-blue-700 mb-1">分类目录格式提醒</p>
+            <p class="text-sm font-semibold text-blue-700 mb-1">统一工作区结构提醒</p>
             <ul class="text-xs text-blue-700 list-disc pl-4 space-y-1">
-              <li>根目录需包含：`factors.xlsx`（或 `factors.xls` / `factors.csv`）。</li>
-              <li>根目录需包含：`已分类材料/`（按材料名称建立子目录）。</li>
-              <li>根目录需包含：`待分类材料/`（兼容 `待分类/`），且目录下需有图片或 PDF 文件。</li>
+              <li>根目录必须包含：`factors.xlsx`。</li>
+              <li>根目录下每种材料使用一个同名子目录，例如 `营业证照/`、`法人身份证明/`。</li>
+              <li>每个材料目录下至少放 1 个样本图片或 PDF，系统会自动扫描全部附件生成分类提示词。</li>
             </ul>
           </div>
+          <WorkspaceValidationStatusBar
+            v-if="workDir"
+            :status="classifyValidationStatus"
+            :issue-count="classifyValidationErrors.length"
+            :checking="classifyValidationChecking"
+            :checked-at="classifyValidationCheckedAt"
+            @validate="runClassifyWorkspaceValidation"
+            @open-repair="openFactorsWorkbookRepairDesk"
+            @download-workbook="downloadFactorsWorkbook"
+          />
 
-          <div v-if="classifyValidationErrors.length > 0" class="rounded-xl border border-red-200 bg-red-50 p-3">
-            <p class="text-sm font-semibold text-red-700 mb-1">分类前格式校验未通过</p>
-            <ul class="text-xs text-red-600 space-y-1 list-disc pl-4">
-              <li v-for="(err, i) in classifyValidationErrors" :key="`classify-err-${i}`">{{ err }}</li>
-            </ul>
-          </div>
-
-          <!-- 材料名称 + 待分类文件 双列预览 -->
+          <!-- 材料名称 + 样本附件 双列预览 -->
           <div v-if="workDir" class="grid grid-cols-2 gap-4">
             <div class="bg-white rounded-xl border overflow-hidden">
               <div class="flex items-center justify-between px-4 py-3 bg-blue-50 border-b">
@@ -125,7 +128,7 @@
             </div>
             <div class="bg-white rounded-xl border overflow-hidden">
               <div class="flex items-center justify-between px-4 py-3 bg-yellow-50 border-b">
-                <span class="text-sm font-semibold text-yellow-800">待分类文件</span>
+                <span class="text-sm font-semibold text-yellow-800">样本附件</span>
                 <span class="px-2 py-0.5 bg-yellow-500 text-white rounded-full text-xs font-medium">{{ pendingFiles.length }} 个</span>
               </div>
               <div class="divide-y max-h-52 overflow-y-auto">
@@ -136,7 +139,7 @@
                   <span class="text-sm text-gray-700 truncate flex-1">{{ f.name }}</span>
                   <span class="text-xs text-gray-400 flex-shrink-0">{{ formatSize(f.size) }}</span>
                 </div>
-                <div v-if="pendingFiles.length === 0" class="px-4 py-4 text-sm text-gray-400 text-center">暂无待分类文件</div>
+                <div v-if="pendingFiles.length === 0" class="px-4 py-4 text-sm text-gray-400 text-center">暂无样本附件</div>
               </div>
             </div>
           </div>
@@ -180,10 +183,10 @@
           <div class="flex items-center justify-between pt-2">
             <div class="text-sm text-gray-500">
               <span v-if="!workDir">请先选择工作目录</span>
-              <span v-else-if="!canClassify">目录数据未就绪（需要材料名称和待分类文件）</span>
+              <span v-else-if="!canClassify">目录数据未就绪（需要材料目录和样本附件）</span>
               <span v-else class="text-green-600 flex items-center gap-1">
                 <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd"/></svg>
-                {{ pendingFiles.length }} 个文件 · {{ categories.length }} 个类别 · 最多 {{ maxRounds }} 轮
+                {{ pendingFiles.length }} 个样本 · {{ categories.length }} 个材料目录 · 最多 {{ maxRounds }} 轮
               </span>
             </div>
             <button @click="goStep2" :disabled="!canClassify || isRunning"
@@ -192,7 +195,7 @@
               <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 10h16M4 14h16M4 18h16"/>
               </svg>
-              开始分类
+              开始生成
             </button>
           </div>
         </div>
@@ -201,7 +204,7 @@
         <div v-if="currentStep === 2" class="space-y-4">
           <div>
             <span class="text-lg font-bold text-gray-900">执行分类</span>
-            <p class="text-sm text-gray-500 mt-1">自动对 {{ pendingFiles.length }} 个文件执行最多 {{ maxRounds }} 轮迭代分类</p>
+            <p class="text-sm text-gray-500 mt-1">自动对 {{ pendingFiles.length }} 个样本附件执行最多 {{ maxRounds }} 轮迭代，生成材料分类提示词</p>
           </div>
 
           <!-- 运行中 -->
@@ -212,7 +215,7 @@
                 <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"/>
               </svg>
             </div>
-            <p class="text-base font-semibold text-gray-700">正在执行分类，请稍候...</p>
+            <p class="text-base font-semibold text-gray-700">正在生成分类提示词，请稍候...</p>
             <p class="text-sm text-gray-400 mt-1">最多 {{ maxRounds }} 轮迭代优化</p>
           </div>
 
@@ -225,15 +228,15 @@
               </div>
               <div class="bg-white rounded-xl border p-5 text-center">
                 <div class="text-3xl font-bold text-blue-600">{{ result.categories?.length || result.material_names?.length || 0 }}</div>
-                <div class="text-xs text-gray-500 mt-1">事项数</div>
+                <div class="text-xs text-gray-500 mt-1">材料数</div>
               </div>
               <div class="bg-white rounded-xl border p-5 text-center">
                 <div class="text-3xl font-bold text-purple-600">{{ result.step2_summary?.classified_count || 0 }}</div>
-                <div class="text-xs text-gray-500 mt-1">成功归集数</div>
+                <div class="text-xs text-gray-500 mt-1">生成方案数</div>
               </div>
             </div>
             <div class="flex items-center justify-between pt-2">
-              <span class="text-sm text-gray-500">分类完成，请进入下一步审核结果</span>
+              <span class="text-sm text-gray-500">生成完成，请进入下一步审核结果</span>
               <button @click="currentStep = 3"
                 class="flex items-center gap-2 px-6 py-2.5 bg-blue-600 text-white rounded-lg text-sm font-semibold hover:bg-blue-700 transition shadow-sm">
                 下一步：审核结果
@@ -258,7 +261,7 @@
               <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 19a2 2 0 01-2-2V7a2 2 0 012-2h4l2 2h4a2 2 0 012 2v1M5 19h14a2 2 0 002-2v-5a2 2 0 00-2-2H9a2 2 0 00-2 2v5a2 2 0 01-2 2z"/>
               </svg>
-              在 Finder 中查看
+              查看结果目录
             </button>
           </div>
 
@@ -285,18 +288,18 @@
               </div>
               <div class="bg-white rounded-xl border p-4 text-center">
                 <div class="text-2xl font-bold text-green-600">{{ result?.step2_summary?.classified_count || 0 }}</div>
-                <div class="text-xs text-gray-500 mt-1">成功归集数</div>
+                <div class="text-xs text-gray-500 mt-1">生成方案数</div>
               </div>
               <div class="bg-white rounded-xl border p-4 text-center">
                 <div class="text-2xl font-bold text-purple-600">{{ result?.material_names?.length || result?.categories?.length || 0 }}</div>
-                <div class="text-xs text-gray-500 mt-1">事项数</div>
+                <div class="text-xs text-gray-500 mt-1">材料数</div>
               </div>
             </div>
 
             <!-- 分类明细列表 -->
             <div class="bg-white rounded-xl border overflow-hidden">
               <div class="flex items-center justify-between px-4 py-3 bg-gray-50 border-b">
-                <span class="text-sm font-semibold text-gray-700">文件分类明细</span>
+              <span class="text-sm font-semibold text-gray-700">样本分类明细</span>
                 <span class="text-xs text-gray-400">共 {{ result?.step1_result?.length || 0 }} 条记录</span>
               </div>
               <div v-if="result?.step1_result?.length" class="divide-y max-h-96 overflow-y-auto">
@@ -326,10 +329,10 @@
               </div>
             </div>
 
-            <!-- 归集分布 -->
+            <!-- 分类结果分布 -->
             <div v-if="result?.step2_summary?.folder_distribution" class="bg-white rounded-xl border overflow-hidden">
               <div class="px-4 py-3 bg-gray-50 border-b">
-                <span class="text-sm font-semibold text-gray-700">归集分布</span>
+                <span class="text-sm font-semibold text-gray-700">分类结果分布</span>
               </div>
               <div class="p-4 grid grid-cols-2 gap-2">
                 <div v-for="(count, folder) in result.step2_summary.folder_distribution" :key="folder"
@@ -580,9 +583,9 @@
                 <path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"/>
               </svg>
             </div>
-            <h2 class="text-xl font-bold text-gray-900 mb-2">分类已确认完成！</h2>
-            <p class="text-sm text-gray-500 mb-1">分类结果经人工审核确认，归集操作完成</p>
-            <p class="text-xs text-gray-400">处理 {{ result?.total_files || 0 }} 个文件 · 归集 {{ result?.step2_summary?.classified_count || 0 }} 个</p>
+            <h2 class="text-xl font-bold text-gray-900 mb-2">分类提示词已确认完成！</h2>
+            <p class="text-sm text-gray-500 mb-1">分类提示词结果经人工审核确认，可随时下载 JSON 产物</p>
+            <p class="text-xs text-gray-400">处理 {{ result?.total_files || result?.image_count || 0 }} 个样本 · 材料 {{ result?.material_names?.length || result?.categories?.length || 0 }} 个</p>
           </div>
 
           <div class="grid grid-cols-2 gap-4">
@@ -593,8 +596,8 @@
                   <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 19a2 2 0 01-2-2V7a2 2 0 012-2h4l2 2h4a2 2 0 012 2v1M5 19h14a2 2 0 002-2v-5a2 2 0 00-2-2H9a2 2 0 00-2 2v5a2 2 0 01-2 2z"/>
                 </svg>
               </div>
-              <div class="text-sm font-semibold text-gray-800 mb-1">查看已分类目录</div>
-              <div class="text-xs text-gray-400">在 Finder 中打开归集结果</div>
+              <div class="text-sm font-semibold text-gray-800 mb-1">查看结果目录</div>
+              <div class="text-xs text-gray-400">在工作区中查看生成的 JSON 和提示词文件</div>
             </button>
             <button @click="downloadResultZip"
               class="bg-white rounded-xl border p-5 text-left hover:border-green-300 hover:bg-green-50 transition group">
@@ -604,7 +607,7 @@
                 </svg>
               </div>
               <div class="text-sm font-semibold text-gray-800 mb-1">下载分类结果 ZIP</div>
-              <div class="text-xs text-gray-400">打包已分类材料并下载到本地</div>
+              <div class="text-xs text-gray-400">打包分类提示词 JSON、提示词文本和报告并下载</div>
             </button>
             <button @click="clear"
               class="bg-white rounded-xl border p-5 text-left hover:border-gray-300 hover:bg-gray-50 transition group">
@@ -640,6 +643,16 @@
           </div>
         </div>
 
+        <FactorsWorkbookRepairPanel
+          :open="showFactorsWorkbookRepair"
+          :work-dir="workDir"
+          :errors="classifyValidationErrors"
+          :diagnostics="classifyValidationDiagnostics"
+          @close="showFactorsWorkbookRepair = false"
+          @validation-updated="handleFactorsWorkbookValidationUpdated"
+          @log="addLog"
+        />
+
       </div>
     </div>
   </div>
@@ -652,6 +665,8 @@ import { apiClient } from '../services/apiClient.js'
 import { listen } from '../tauri/event.js'
 import { invoke } from '../tauri/tauri.js'
 import { getScopedStorageItem, removeScopedStorageItem, setScopedStorageItem } from '../services/authState.js'
+import FactorsWorkbookRepairPanel from '../components/FactorsWorkbookRepairPanel.vue'
+import WorkspaceValidationStatusBar from '../components/WorkspaceValidationStatusBar.vue'
 
 const steps = [
   { title: '上传工作区与配置', active: '配置中', done: '已选工作区', pending: '待配置' },
@@ -688,6 +703,11 @@ const testResult = ref(null)
 const isTesting = ref(false)
 const testingType = ref('')
 const classifyValidationErrors = ref([])
+const classifyValidationDiagnostics = ref([])
+const classifyValidationStatus = ref('idle')
+const classifyValidationCheckedAt = ref('')
+const classifyValidationChecking = ref(false)
+const showFactorsWorkbookRepair = ref(false)
 
 const reviewTabs = computed(() => [
   { id: 'detail', label: '分类明细', badge: result.value?.step1_result?.length || null },
@@ -823,52 +843,115 @@ async function selectWorkDir() {
 
 async function loadDirInfo() {
   classifyValidationErrors.value = []
+  classifyValidationDiagnostics.value = []
+  classifyValidationStatus.value = 'idle'
+  classifyValidationCheckedAt.value = ''
+  classifyValidationChecking.value = false
+  showFactorsWorkbookRepair.value = false
   try {
     const cats = await invoke('get_material_categories', { workDir: workDir.value })
     categories.value = cats
-    addLog(`发现 ${cats.length} 个材料名称`, 'success')
+    addLog(`发现 ${cats.length} 个材料目录`, 'success')
   } catch (e) {
-    addLog(`扫描材料名称失败: ${e}`, 'error')
+    addLog(`扫描材料目录失败: ${e}`, 'error')
     categories.value = []
   }
   try {
     const files = await invoke('get_pending_files', { workDir: workDir.value })
     pendingFiles.value = files
-    addLog(`待分类文件: ${files.length} 个`, 'success')
+    addLog(`样本附件: ${files.length} 个`, 'success')
   } catch (e) {
-    addLog(`扫描待分类文件失败: ${e}`, 'error')
+    addLog(`扫描样本附件失败: ${e}`, 'error')
     pendingFiles.value = []
   }
 }
 
-async function goStep2() {
-  if (!canClassify.value || isRunning.value) return
+function applyClassifyValidationResult(validation) {
+  classifyValidationCheckedAt.value = new Date().toISOString()
+  if (validation?.ok) {
+    classifyValidationStatus.value = 'valid'
+    classifyValidationErrors.value = []
+    classifyValidationDiagnostics.value = []
+    return true
+  }
+  classifyValidationStatus.value = 'invalid'
+  classifyValidationErrors.value = Array.isArray(validation?.errors) && validation.errors.length > 0
+    ? validation.errors
+    : ['分类目录格式不符合要求，请检查工作区结构。']
+  classifyValidationDiagnostics.value = Array.isArray(validation?.diagnostics) ? validation.diagnostics : []
+  return false
+}
+
+function handleFactorsWorkbookValidationUpdated(validation) {
+  if (applyClassifyValidationResult(validation)) {
+    addLog('修复后的 factors.xlsx 已通过统一工作区校验。', 'success')
+  } else {
+    addLog('factors.xlsx 已保存，但分类前校验仍未完全通过。', 'warning')
+  }
+}
+
+function openFactorsWorkbookRepairDesk() {
+  if (!workDir.value) return
+  showFactorsWorkbookRepair.value = true
+}
+
+function downloadFactorsWorkbook() {
+  if (!workDir.value) return
+  apiClient.download('/api/files/download', { path: `${workDir.value}/factors.xlsx` })
+  addLog('已开始下载 factors.xlsx', 'success')
+}
+
+async function validateClassifyWorkspace(options = {}) {
+  const { openRepairOnFail = false, silentSuccess = false } = options
   classifyValidationErrors.value = []
+  classifyValidationDiagnostics.value = []
+  classifyValidationChecking.value = true
   try {
     const validationRes = await apiClient.post('/api/classify/validate-workdir', { workDir: workDir.value })
     const validation = validationRes?.data || {}
-    if (!validation.ok) {
-      const errors = Array.isArray(validation.errors) && validation.errors.length > 0
-        ? validation.errors
-        : ['分类目录格式不符合要求，请检查工作区结构。']
-      classifyValidationErrors.value = errors
-      addLog('分类前格式校验未通过，已阻止分类。', 'error')
-      errors.forEach((msg) => addLog(`校验失败: ${msg}`, 'error'))
-      return
+    if (!applyClassifyValidationResult(validation)) {
+      if (openRepairOnFail) {
+        showFactorsWorkbookRepair.value = true
+      }
+      addLog(openRepairOnFail ? '工作区校验失败，已打开修复台。' : '工作区校验失败，请先处理后再继续。', 'error')
+      classifyValidationErrors.value.forEach((msg) => addLog(`校验失败: ${msg}`, 'error'))
+      return false
     }
     const warnings = Array.isArray(validation.warnings) ? validation.warnings : []
     warnings.forEach((msg) => addLog(`校验提示: ${msg}`, 'warning'))
+    if (!silentSuccess) {
+      addLog('工作区校验通过。', 'success')
+    }
+    return true
   } catch (e) {
-    const errMsg = `分类前格式校验请求失败: ${e}`
+    const errMsg = `工作区校验请求失败: ${e}`
+    classifyValidationStatus.value = 'invalid'
+    classifyValidationCheckedAt.value = new Date().toISOString()
     classifyValidationErrors.value = [errMsg]
+    classifyValidationDiagnostics.value = []
+    if (openRepairOnFail) {
+      showFactorsWorkbookRepair.value = true
+    }
     addLog(errMsg, 'error')
-    return
+    return false
+  } finally {
+    classifyValidationChecking.value = false
   }
+}
+
+async function runClassifyWorkspaceValidation() {
+  await validateClassifyWorkspace()
+}
+
+async function goStep2() {
+  if (!canClassify.value || isRunning.value) return
+  const validationOk = await validateClassifyWorkspace({ openRepairOnFail: true, silentSuccess: true })
+  if (!validationOk) return
 
   currentStep.value = 2
   isRunning.value = true
   result.value = null
-  addLog(`开始分类，最大 ${maxRounds.value} 轮迭代...`, 'info')
+  addLog(`开始生成材料分类提示词，最大 ${maxRounds.value} 轮迭代...`, 'info')
   try {
     const res = await invoke('classify_materials', {
       workDir: workDir.value,
@@ -879,14 +962,14 @@ async function goStep2() {
     editExtractPrompt.value = res.final_extract_prompt || ''
     editAggregatePrompt.value = res.final_aggregate_prompt || ''
     promptSaved.value = false
-    addLog('分类完成！', 'success')
+    addLog('材料分类提示词生成完成！', 'success')
     currentStep.value = 3
   } catch (e) {
     const errStr = String(e)
     if (errStr.includes('API Key') || errStr.includes('DASHSCOPE') || errStr.includes('OPENAI_API_KEY')) {
-      addLog('分类失败: 未配置可用的 API 密钥，请前往【设置】页面配置默认 API Key 或模型专属 API Key', 'error')
+      addLog('生成失败: 未配置可用的 API 密钥，请前往【设置】页面配置默认 API Key 或模型专属 API Key', 'error')
     } else {
-      addLog(`分类失败: ${e}`, 'error')
+      addLog(`生成失败: ${e}`, 'error')
     }
     currentStep.value = 1
   } finally {
@@ -957,7 +1040,7 @@ async function goStep2Again() {
 }
 
 function confirmAndGoStep4() {
-  addLog('✓ 人工审核分类结果正确，完成！', 'success')
+  addLog('✓ 人工审核通过，分类提示词结果已确认完成！', 'success')
   currentStep.value = 4
 }
 
@@ -973,7 +1056,7 @@ async function downloadResultZip() {
   if (!workDir.value) return
   try {
     apiClient.open('/api/classify/download-result', { workDir: workDir.value })
-    addLog('开始下载分类结果 ZIP。', 'success')
+    addLog('开始下载分类提示词结果 ZIP。', 'success')
   } catch (e) {
     addLog(`下载分类结果失败: ${e}`, 'error')
   }
@@ -993,6 +1076,11 @@ function clear() {
   testResult.value = null
   activeReviewTab.value = 'detail'
   classifyValidationErrors.value = []
+  classifyValidationDiagnostics.value = []
+  classifyValidationStatus.value = 'idle'
+  classifyValidationCheckedAt.value = ''
+  classifyValidationChecking.value = false
+  showFactorsWorkbookRepair.value = false
   if (availableModels.value.length > 0) selectedModelId.value = availableModels.value[0].id
 }
 </script>

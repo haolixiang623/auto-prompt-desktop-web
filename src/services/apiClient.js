@@ -115,5 +115,18 @@ export const apiClient = {
       ? { ...(query || {}), authToken }
       : query
     window.open(`${DEFAULT_BASE}${withQuery(path, finalQuery)}`, '_blank', 'noopener,noreferrer')
+  },
+  download(path, query) {
+    const authToken = getAuthToken()
+    const finalQuery = authToken
+      ? { ...(query || {}), authToken }
+      : query
+    const href = `${DEFAULT_BASE}${withQuery(path, finalQuery)}`
+    const link = document.createElement('a')
+    link.href = href
+    link.style.display = 'none'
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
   }
 }

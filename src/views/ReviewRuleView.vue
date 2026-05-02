@@ -50,6 +50,13 @@
           </svg>
           <span class="text-xs text-blue-600">生成中...</span>
         </div>
+        <button v-if="isRunning" @click="cancelReviewRuleGeneration" :disabled="stopRequested"
+          class="w-full flex items-center justify-center gap-1.5 px-3 py-2 text-xs text-red-600 border border-red-200 rounded-lg hover:bg-red-50 disabled:opacity-50 transition">
+          <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 6h12v12H6z" />
+          </svg>
+          {{ stopRequested ? '停止中...' : '停止生成' }}
+        </button>
         <button @click="clear" :disabled="isRunning"
           class="w-full flex items-center justify-center gap-1.5 px-3 py-2 text-xs text-gray-500 border border-gray-200 rounded-lg hover:bg-gray-50 hover:text-gray-700 disabled:opacity-40 transition">
           <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -68,7 +75,7 @@
         <div v-if="currentStep === 1" class="space-y-4">
           <div>
             <span class="text-lg font-bold text-gray-900">配置生成参数</span>
-            <p class="text-sm text-gray-500 mt-1">上传材料工作区与推理模型，自动分析审查要点规则并生成 JSON</p>
+            <p class="text-sm text-gray-500 mt-1">上传统一结构工作区与推理模型，自动分析审查要点规则并生成 JSON</p>
           </div>
 
           <!-- 工作区选择 -->
@@ -108,8 +115,8 @@
                   >
                     <div class="flex items-start justify-between gap-3">
                       <div>
-                        <p class="text-sm font-semibold text-slate-800">审查规则目录示意</p>
-                        <p class="text-xs text-slate-500 mt-1">这个步骤最关键的是 Excel 位置和文件名</p>
+                        <p class="text-sm font-semibold text-slate-800">统一工作区目录示意</p>
+                        <p class="text-xs text-slate-500 mt-1">审查规则现在和要素生成、材料分类共用同一份目录校验</p>
                       </div>
                       <span class="px-2 py-1 rounded-full bg-red-50 text-red-600 text-[11px] font-medium">关键要求</span>
                     </div>
@@ -118,14 +125,20 @@
                       <div class="text-[11px] text-red-500 mb-2 font-medium">必须满足</div>
                       <div class="space-y-1.5 font-mono text-xs text-slate-700 leading-5">
                         <div class="font-semibold text-slate-800">工作区/</div>
-                        <div class="pl-3">└─ <span class="font-semibold text-red-600">factors.xlsx</span></div>
+                        <div class="pl-3">├─ <span class="font-semibold text-red-600">factors.xlsx</span></div>
+                        <div class="pl-3">├─ 材料A/</div>
+                        <div class="pl-8 text-slate-500">└─ sample-1.png</div>
+                        <div class="pl-3">└─ 材料B/</div>
+                        <div class="pl-8 text-slate-500">└─ sample-1.pdf</div>
                       </div>
                     </div>
 
                     <div class="mt-3 space-y-2 text-xs text-slate-600 leading-5">
                       <p>1. <span class="font-semibold text-red-600">factors.xlsx</span> 必须放在 <span class="font-semibold text-red-600">工作区根目录</span></p>
                       <p>2. 文件名必须就是 <span class="font-semibold text-red-600">factors.xlsx</span>，不要改名</p>
-                      <p>3. 这个步骤主要读取 Excel 审查要点，<span class="font-semibold text-red-600">不依赖材料图片</span></p>
+                      <p>3. Excel 需要同时包含 <span class="font-semibold text-red-600">材料名称 / 要素字段名称（或要素名称） / 审查要点名称 / 审查要点规则说明</span> 等统一列</p>
+                      <p>4. 审查要点规则说明中的引用支持 <span class="font-semibold text-red-600">#材料名称-要素名称#</span> 与设置中维护的内置变量（如 <span class="font-semibold text-red-600">#当前日期#</span>）</p>
+                      <p>5. 工作区仍需保留一级材料目录和样本附件，三项功能共用同一份校验结果</p>
                     </div>
                   </div>
                 </Transition>
@@ -165,13 +178,13 @@
               </div>
             </Transition>
             <p class="text-xs text-gray-400">
-              审查要点规则说明列用 <code class="bg-gray-100 px-1 rounded">#材料名称-字段名称#</code> 引用要素；空审查要点名称行自动跳过
+              审查要点规则说明列可用 <code class="bg-gray-100 px-1 rounded">#材料名称-字段名称#</code> 引用要素，也可用 <code class="bg-gray-100 px-1 rounded">#当前日期#</code> 这类内置变量；若不写任何 <code class="bg-gray-100 px-1 rounded">#...#</code> 占位符则不做引用校验
             </p>
             <div class="inline-flex items-center gap-1.5 rounded-lg bg-red-50 px-2.5 py-1 text-xs text-red-600">
               <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01M5.07 19h13.86c1.54 0 2.5-1.67 1.73-3L13.73 4c-.77-1.33-2.69-1.33-3.46 0L3.34 16c-.77 1.33.19 3 1.73 3z" />
               </svg>
-              关键要求：根目录必须有 factors.xlsx，鼠标移到右侧图标可查看示意
+              关键要求：统一工作区必须同时满足要素、分类、审查规则三项校验，鼠标移到右侧图标可查看示意
             </div>
           </div>
 
@@ -243,6 +256,18 @@
             </div>
           </div>
 
+          <WorkspaceValidationStatusBar
+            v-if="workDir"
+            :status="reviewValidationStatus"
+            :issue-count="reviewValidationErrors.length"
+            :checking="reviewValidationChecking"
+            :checked-at="reviewValidationCheckedAt"
+            :disabled="isRunning || isUploading"
+            @validate="runReviewRuleWorkspaceValidation"
+            @open-repair="openFactorsWorkbookRepairDesk"
+            @download-workbook="downloadFactorsWorkbook"
+          />
+
           <!-- 操作按钮 -->
           <div class="flex gap-3">
             <button @click="generate" :disabled="!workDir || isRunning"
@@ -256,6 +281,13 @@
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/>
               </svg>
               {{ isRunning ? '生成中...' : '开始生成' }}
+            </button>
+            <button v-if="isRunning" @click="cancelReviewRuleGeneration" :disabled="stopRequested"
+              class="flex items-center gap-2 px-6 py-2.5 rounded-lg border border-red-200 text-red-600 text-sm font-medium transition hover:bg-red-50 disabled:opacity-50">
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 6h12v12H6z" />
+              </svg>
+              {{ stopRequested ? '停止中...' : '停止生成' }}
             </button>
           </div>
 
@@ -459,6 +491,16 @@
           </div>
         </div>
 
+        <FactorsWorkbookRepairPanel
+          :open="showFactorsWorkbookRepair"
+          :work-dir="workDir"
+          :errors="reviewValidationErrors"
+          :diagnostics="reviewValidationDiagnostics"
+          @close="showFactorsWorkbookRepair = false"
+          @validation-updated="handleFactorsWorkbookValidationUpdated"
+          @log="addLog"
+        />
+
       </div>
     </div>
   </div>
@@ -469,10 +511,13 @@ import { ref, computed, onMounted, onUnmounted, onActivated, nextTick } from 'vu
 import { useRoute } from 'vue-router'
 import { apiClient } from '../services/apiClient.js'
 import { parseJsonFilePayload } from '../services/jsonFile.js'
+import { cancelTask, isTaskCancelledError, startTask, waitForTask } from '../services/taskService.js'
 import { listen } from '../tauri/event.js'
 import { invoke } from '../tauri/tauri.js'
 import { getScopedStorageItem, removeScopedStorageItem, setScopedStorageItem } from '../services/authState.js'
 import { selectWorkspace } from '../services/uploadService.js'
+import FactorsWorkbookRepairPanel from '../components/FactorsWorkbookRepairPanel.vue'
+import WorkspaceValidationStatusBar from '../components/WorkspaceValidationStatusBar.vue'
 
 const route = useRoute()
 
@@ -509,6 +554,14 @@ const selectedModelId = ref('')
 const logs        = ref([])
 const results     = ref([])
 const logContainer = ref(null)
+const reviewValidationErrors = ref([])
+const reviewValidationDiagnostics = ref([])
+const reviewValidationStatus = ref('idle')
+const reviewValidationCheckedAt = ref('')
+const reviewValidationChecking = ref(false)
+const showFactorsWorkbookRepair = ref(false)
+const currentTaskId = ref('')
+const stopRequested = ref(false)
 
 // Step2 状态
 const expandedMaterials = ref([])    // 展开的材料名
@@ -580,14 +633,10 @@ const hasAnyPendingChanges = computed(() => {
 
 // 保存所有改动
 async function saveAllChanges() {
-  const successResults = results.value.filter(r => r.success && hasPendingChanges(r.material))
-  if (successResults.length === 0) return
-
   isSaving.value = 'all'
   try {
-    for (const r of successResults) {
-      await saveChanges(r)
-    }
+    const successResults = await persistPendingReviewChanges()
+    if (successResults.length === 0) return
     addLog(`已保存所有 ${successResults.length} 个材料的改动`, 'success')
   } catch (e) {
     addLog(`保存失败: ${e}`, 'error')
@@ -596,10 +645,51 @@ async function saveAllChanges() {
   }
 }
 
+async function persistPendingReviewChanges() {
+  const successResults = results.value.filter(r => r.success && hasPendingChanges(r.material))
+  if (successResults.length === 0) return []
+  for (const r of successResults) {
+    await saveChanges(r)
+  }
+  return successResults
+}
+
+function downloadReviewedJsons(paths) {
+  if (!Array.isArray(paths) || paths.length === 0) return false
+  if (paths.length === 1) {
+    apiClient.download('/api/files/download', { path: paths[0] })
+    addLog('已开始下载审查规则JSON', 'success')
+    return true
+  }
+  apiClient.download('/api/files/download-batch', { pathsJson: JSON.stringify(paths) })
+  addLog(`已开始打包下载 ${paths.length} 个审查规则JSON`, 'success')
+  return true
+}
+
 // 完成审核
-function completeReview() {
-  addLog('审查规则审核完成', 'success')
-  clear()
+async function completeReview() {
+  if (isSaving.value) return
+  isSaving.value = 'all'
+  try {
+    const savedResults = await persistPendingReviewChanges()
+    if (savedResults.length > 0) {
+      addLog(`已保存所有 ${savedResults.length} 个材料的改动`, 'success')
+    }
+
+    const downloadPaths = results.value
+      .filter((r) => r.success && r.output)
+      .map((r) => r.output)
+
+    if (downloadReviewedJsons(downloadPaths)) {
+      addLog('审查规则审核完成', 'success')
+    } else {
+      addLog('审查规则审核完成，但未找到可下载的 JSON 文件', 'warning')
+    }
+  } catch (e) {
+    addLog(`完成审核失败: ${e}`, 'error')
+  } finally {
+    isSaving.value = null
+  }
 }
 
 // ─── 生命周期 ─────────────────────────────────────
@@ -624,6 +714,7 @@ onActivated(async () => {
   const queryWorkDir = route.query.workDir
   if (queryWorkDir) {
     workDir.value = queryWorkDir
+    resetReviewValidationState()
     persistWorkDir()
     tagWorkspaceModule()
     addLog(`已打开工作区: ${queryWorkDir}`, 'info')
@@ -645,6 +736,7 @@ onMounted(async () => {
   const queryWorkDir = route.query.workDir
   if (queryWorkDir) {
     workDir.value = queryWorkDir
+    resetReviewValidationState()
     persistWorkDir()
     tagWorkspaceModule()
     addLog(`已打开工作区: ${queryWorkDir}`, 'info')
@@ -652,6 +744,7 @@ onMounted(async () => {
     const storedWorkDir = getScopedStorageItem(WORKDIR_STORAGE_KEY)
     if (storedWorkDir) {
       workDir.value = storedWorkDir
+      resetReviewValidationState()
       addLog(`已恢复上次工作区: ${storedWorkDir}`, 'info')
     }
   }
@@ -665,6 +758,19 @@ function getLogClass(type) {
 }
 function addLog(message, type = 'info') {
   logs.value.push({ time: new Date().toLocaleTimeString(), message, type })
+}
+
+async function cancelReviewRuleGeneration() {
+  if (!isRunning.value || stopRequested.value) return
+  stopRequested.value = true
+  addLog('已请求停止生成，正在结束当前任务...', 'warning')
+  if (!currentTaskId.value) return
+  try {
+    await cancelTask(currentTaskId.value)
+  } catch (error) {
+    stopRequested.value = false
+    addLog(`停止生成失败: ${error}`, 'error')
+  }
 }
 
 function persistWorkDir() {
@@ -718,6 +824,7 @@ async function selectWorkDir() {
     })
     if (!result?.rootPath) return
     workDir.value = result.rootPath
+    resetReviewValidationState()
     persistWorkDir()
     tagWorkspaceModule()
     addLog(`已上传工作区: ${result.rootPath}`, 'info')
@@ -739,10 +846,103 @@ function formatSize(bytes) {
   return (bytes / (1024 * 1024)).toFixed(1) + ' MB'
 }
 
+function resetReviewValidationState() {
+  reviewValidationErrors.value = []
+  reviewValidationDiagnostics.value = []
+  reviewValidationStatus.value = 'idle'
+  reviewValidationCheckedAt.value = ''
+  reviewValidationChecking.value = false
+  showFactorsWorkbookRepair.value = false
+}
+
+function applyReviewValidationResult(validation) {
+  reviewValidationCheckedAt.value = new Date().toISOString()
+  if (validation?.ok) {
+    reviewValidationStatus.value = 'valid'
+    reviewValidationErrors.value = []
+    reviewValidationDiagnostics.value = []
+    return true
+  }
+  reviewValidationStatus.value = 'invalid'
+  reviewValidationErrors.value = Array.isArray(validation?.errors) && validation.errors.length > 0
+    ? validation.errors
+    : ['当前工作区不满足审查规则生成要求']
+  reviewValidationDiagnostics.value = Array.isArray(validation?.diagnostics) ? validation.diagnostics : []
+  return false
+}
+
+function handleFactorsWorkbookValidationUpdated(validation) {
+  if (applyReviewValidationResult(validation)) {
+    addLog('修复后的 factors.xlsx 已通过统一工作区校验。', 'success')
+  } else {
+    addLog('factors.xlsx 已保存，但审查规则生成前校验仍未完全通过。', 'warning')
+  }
+}
+
+function openFactorsWorkbookRepairDesk() {
+  if (!workDir.value) return
+  showFactorsWorkbookRepair.value = true
+}
+
+function downloadFactorsWorkbook() {
+  if (!workDir.value) return
+  apiClient.download('/api/files/download', { path: `${workDir.value}/factors.xlsx` })
+  addLog('已开始下载 factors.xlsx', 'success')
+}
+
+async function validateReviewRuleWorkspace(options = {}) {
+  const { openRepairOnFail = false, silentSuccess = false } = options
+  reviewValidationErrors.value = []
+  reviewValidationDiagnostics.value = []
+  reviewValidationChecking.value = true
+  try {
+    const validationResponse = await apiClient.post('/api/review-rule/validate-workspace', {
+      workDir: workDir.value,
+    })
+    const validation = validationResponse?.data || validationResponse || {}
+    if (!applyReviewValidationResult(validation)) {
+      if (openRepairOnFail) {
+        showFactorsWorkbookRepair.value = true
+      }
+      addLog(openRepairOnFail ? '工作区校验失败，已打开修复台。' : '工作区校验失败，请先处理后再继续。', 'error')
+      reviewValidationErrors.value.forEach((message) => addLog(`[校验失败] ${message}`, 'error'))
+      return false
+    }
+    const warnings = Array.isArray(validation?.warnings) ? validation.warnings : []
+    warnings.forEach((warning) => addLog(`[校验提示] ${warning}`, 'warning'))
+    if (!silentSuccess) {
+      addLog(`工作区校验通过：检测到 ${validation.meta?.material_count || 0} 个材料，${validation.meta?.keypoint_count || 0} 个审查要点`, 'success')
+    }
+    return true
+  } catch (error) {
+    const errMsg = `工作区校验失败: ${error}`
+    reviewValidationStatus.value = 'invalid'
+    reviewValidationCheckedAt.value = new Date().toISOString()
+    reviewValidationErrors.value = [errMsg]
+    reviewValidationDiagnostics.value = []
+    if (openRepairOnFail) {
+      showFactorsWorkbookRepair.value = true
+    }
+    addLog(errMsg, 'error')
+    return false
+  } finally {
+    reviewValidationChecking.value = false
+  }
+}
+
+async function runReviewRuleWorkspaceValidation() {
+  await validateReviewRuleWorkspace()
+}
+
 // ─── Step1：生成 ──────────────────────────────────
 async function generate() {
   if (!workDir.value || isRunning.value) return
+  const validationOk = await validateReviewRuleWorkspace({ openRepairOnFail: true, silentSuccess: true })
+  if (!validationOk) return
+
   isRunning.value = true
+  stopRequested.value = false
+  currentTaskId.value = ''
   results.value = []
   keypointData.value = {}
   originalData.value = {}
@@ -750,26 +950,31 @@ async function generate() {
   addLog('开始生成审查规则JSON...', 'info')
   addLog(`工作目录: ${workDir.value}`, 'info')
 
-  // 获取选中模型信息，主要用于界面提示
-  let modelId = null
-  let apiKey = null
-  let baseUrl = null
-
-  if (useLlm.value) {
-    try {
-      const settings = await invoke('load_settings')
-      apiKey = settings.api_key || null
-      baseUrl = 'https://dashscope.aliyuncs.com/compatible-mode/v1'
-      const selModel = (settings.models || []).find(m => m.id === selectedModelId.value)
-      modelId = selModel?.model || null
-      addLog(`启用 LLM 推理，模型: ${modelId || '默认'}`, 'info')
-    } catch (e) {
-      addLog(`读取设置失败，将使用本地推断: ${e}`, 'warning')
-    }
-  }
-
   try {
-    const res = await invoke('generate_review_rule', {
+    if (stopRequested.value) {
+      addLog('已停止生成', 'warning')
+      return
+    }
+
+    // 获取选中模型信息，主要用于界面提示
+    let modelId = null
+    let apiKey = null
+    let baseUrl = null
+
+    if (useLlm.value) {
+      try {
+        const settings = await invoke('load_settings')
+        apiKey = settings.api_key || null
+        baseUrl = 'https://dashscope.aliyuncs.com/compatible-mode/v1'
+        const selModel = (settings.models || []).find(m => m.id === selectedModelId.value)
+        modelId = selModel?.model || null
+        addLog(`启用 LLM 推理，模型: ${modelId || '默认'}`, 'info')
+      } catch (e) {
+        addLog(`读取设置失败，将使用本地推断: ${e}`, 'warning')
+      }
+    }
+
+    const task = await startTask('review-rule', {
       workDir: workDir.value,
       useLlm: useLlm.value,
       apiKey: apiKey,
@@ -777,6 +982,11 @@ async function generate() {
       model: modelId,
       modelCfgId: selectedModelId.value || null,
     })
+    currentTaskId.value = task.id
+    if (stopRequested.value) {
+      await cancelTask(task.id).catch(() => {})
+    }
+    const res = await waitForTask(task.id, 'review-rule-log')
     results.value = res
     const successCount = res.filter(r => r.success).length
     addLog(`生成完成！共 ${res.length} 个材料，成功 ${successCount} 个`, 'success')
@@ -787,8 +997,14 @@ async function generate() {
       await loadAllKeypointData(res.filter(r => r.success))
     }
   } catch (e) {
-    addLog(`生成失败: ${e}`, 'error')
+    if (isTaskCancelledError(e)) {
+      addLog('已停止生成', 'warning')
+    } else {
+      addLog(`生成失败: ${e}`, 'error')
+    }
   } finally {
+    currentTaskId.value = ''
+    stopRequested.value = false
     isRunning.value = false
   }
 }
@@ -952,11 +1168,14 @@ function clear() {
   persistWorkDir()
   logs.value = []
   results.value = []
+  resetReviewValidationState()
   keypointData.value = {}
   originalData.value = {}
   expandedMaterials.value = []
   currentStep.value = 1
   isSaving.value = null
+  currentTaskId.value = ''
+  stopRequested.value = false
   copiedItem.value = null
 }
 </script>

@@ -288,6 +288,39 @@
           <textarea v-model="extractGodPrompt" rows="8"
             class="w-full px-3 py-2 border rounded-lg text-sm font-mono leading-relaxed resize-y focus:outline-none focus:ring-2 focus:ring-blue-300 bg-gray-50"></textarea>
         </div>
+
+        <div class="bg-white rounded-xl shadow-sm border p-5">
+          <div class="flex items-center justify-between mb-3">
+            <div>
+              <h2 class="text-base font-semibold text-gray-800">提取 Profile / 未命中规则配置</h2>
+              <p class="text-xs text-gray-400 mt-1">控制未命中要素的生成策略、系统提示词和完整预览模板。</p>
+            </div>
+          </div>
+          <div class="space-y-3">
+            <div>
+              <label class="block text-sm font-medium text-gray-700 mb-2">默认提取 Profile</label>
+              <select v-model="defaultExtractProfileId" class="w-full px-3 py-2 border rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-300">
+                <option v-for="profile in parsedExtractProfiles" :key="profile.id" :value="profile.id">
+                  {{ profile.name || profile.id }}
+                </option>
+              </select>
+            </div>
+            <div>
+              <label class="block text-sm font-medium text-gray-700 mb-2">extract_profiles JSON</label>
+              <textarea v-model="extractProfilesText" rows="18"
+                class="w-full px-3 py-2 border rounded-lg text-sm font-mono leading-relaxed resize-y focus:outline-none focus:ring-2 focus:ring-blue-300 bg-gray-50"></textarea>
+              <p v-if="extractProfilesParseError" class="mt-2 text-xs text-red-600">{{ extractProfilesParseError }}</p>
+              <p v-else class="mt-2 text-xs text-gray-400">每个 profile 可配置 `systemPrompt`、`analysisPromptTemplate`、`generationPromptTemplate`、`promptTemplate`。</p>
+            </div>
+            <div>
+              <label class="block text-sm font-medium text-gray-700 mb-2">review_rule_builtin_variables JSON</label>
+              <textarea v-model="reviewRuleBuiltinVariablesText" rows="10"
+                class="w-full px-3 py-2 border rounded-lg text-sm font-mono leading-relaxed resize-y focus:outline-none focus:ring-2 focus:ring-blue-300 bg-gray-50"></textarea>
+              <p v-if="reviewRuleBuiltinVariablesParseError" class="mt-2 text-xs text-red-600">{{ reviewRuleBuiltinVariablesParseError }}</p>
+              <p v-else class="mt-2 text-xs text-gray-400">用于维护审查规则内置变量。规则说明里不写 `#...#` 时不做占位符校验；写了 `#材料-要素#` 或 `#当前日期#` 这类占位符后会强制校验。每项建议包含 `token`、`name`、`placeholder`、`dataType`。</p>
+            </div>
+          </div>
+        </div>
       </div>
 
       <!-- Tab 4: 关于 -->
@@ -354,6 +387,9 @@ const tabs = [
 
 const godPrompt = ref('')
 const extractGodPrompt = ref('')
+const extractProfilesText = ref('[]')
+const reviewRuleBuiltinVariablesText = ref('[]')
+const defaultExtractProfileId = ref('')
 const llmTimeout = ref(120)
 const defaultGodPrompts = ref({ classify: '', extract: '' })
 const editingIdx = ref(-1)
@@ -364,6 +400,32 @@ const apiKeySaveState = computed(() => getApiKeySaveState({
   savedApiKey: savedApiKey.value,
   apiKeyConfigured: apiKeyConfigured.value
 }))
+const parsedExtractProfiles = computed(() => {
+  try {
+    const parsed = JSON.parse(extractProfilesText.value || '[]')
+    return Array.isArray(parsed) ? parsed : []
+  } catch {
+    return []
+  }
+})
+const extractProfilesParseError = computed(() => {
+  try {
+    const parsed = JSON.parse(extractProfilesText.value || '[]')
+    if (!Array.isArray(parsed)) return 'extract_profiles 必须是数组'
+    return ''
+  } catch (error) {
+    return `extract_profiles JSON 格式错误：${error.message || error}`
+  }
+})
+const reviewRuleBuiltinVariablesParseError = computed(() => {
+  try {
+    const parsed = JSON.parse(reviewRuleBuiltinVariablesText.value || '[]')
+    if (!Array.isArray(parsed)) return 'review_rule_builtin_variables 必须是数组'
+    return ''
+  } catch (error) {
+    return `review_rule_builtin_variables JSON 格式错误：${error.message || error}`
+  }
+})
 
 function normalizeModel(model) {
   const legacyStyle = Object.prototype.hasOwnProperty.call(model || {}, 'model_id') || !model?.base_url
@@ -525,6 +587,9 @@ async function loadSettings() {
     defaultModelId.value = settings.default_model_id || (models.value[0]?.id ?? '')
     godPrompt.value = settings.god_prompt || ''
     extractGodPrompt.value = settings.extract_god_prompt || ''
+    defaultExtractProfileId.value = settings.default_extract_profile_id || ''
+    extractProfilesText.value = JSON.stringify(settings.extract_profiles || [], null, 2)
+    reviewRuleBuiltinVariablesText.value = JSON.stringify(settings.review_rule_builtin_variables || [], null, 2)
     llmTimeout.value = settings.llm_timeout || 120
   } catch (error) {
     console.error('Failed to load settings:', error)
@@ -549,6 +614,14 @@ async function saveSettings() {
   saving.value = true
   clearTimeout(saveStatusTimer)
   try {
+    const parsedProfiles = JSON.parse(extractProfilesText.value || '[]')
+    if (!Array.isArray(parsedProfiles)) {
+      throw new Error('extract_profiles 必须是数组')
+    }
+    const parsedReviewRuleBuiltinVariables = JSON.parse(reviewRuleBuiltinVariablesText.value || '[]')
+    if (!Array.isArray(parsedReviewRuleBuiltinVariables)) {
+      throw new Error('review_rule_builtin_variables 必须是数组')
+    }
     const selectedDefaultModel = models.value.find(m => m.id === defaultModelId.value)
     await invoke('save_settings', { settings: {
       api_key: apiKey.value,
@@ -557,6 +630,9 @@ async function saveSettings() {
       models: models.value,
       god_prompt: godPrompt.value,
       extract_god_prompt: extractGodPrompt.value,
+      extract_profiles: parsedProfiles,
+      default_extract_profile_id: defaultExtractProfileId.value,
+      review_rule_builtin_variables: parsedReviewRuleBuiltinVariables,
       llm_timeout: llmTimeout.value
     }})
     savedApiKey.value = apiKey.value

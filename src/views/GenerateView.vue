@@ -65,6 +65,13 @@
           </svg>
           <span class="text-xs text-blue-600">{{ isRunning ? `生成中... ${batchElapsed}s` : `验证中... ${verifyElapsed}s` }}</span>
         </div>
+        <button v-if="isRunning" @click="cancelBatchGeneration" :disabled="stopRequested"
+          class="flex w-full items-center justify-center gap-1.5 rounded-lg border border-red-200 px-3 py-2 text-xs text-red-600 transition hover:bg-red-50 disabled:opacity-50 sm:w-auto sm:min-w-36 xl:w-full">
+          <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 6h12v12H6z" />
+          </svg>
+          {{ stopRequested ? '停止中...' : '停止生成' }}
+        </button>
         <button @click="clear" :disabled="isRunning || isVerifying"
           class="flex w-full items-center justify-center gap-1.5 rounded-lg border border-gray-200 px-3 py-2 text-xs text-gray-500 transition hover:bg-gray-50 hover:text-gray-700 disabled:opacity-40 sm:w-auto sm:min-w-36 xl:w-full">
           <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -148,6 +155,7 @@
                       <p>1. 根目录必须包含 <span class="font-semibold text-slate-800">factors.xlsx</span></p>
                       <p>2. 每种材料放在自己的子文件夹里，文件夹名建议和材料名一致</p>
                       <p>3. 子文件夹里放样本图片或 PDF，至少 1 份即可开始生成</p>
+                      <p>4. 统一校验会同时检查要素列和审查要点列，建议 factors.xlsx 维护完整的统一工作表</p>
                     </div>
                   </div>
                 </Transition>
@@ -196,6 +204,17 @@
               鼠标移到右侧图标可查看结构示意，点击也能展开
             </div>
           </div>
+
+          <WorkspaceValidationStatusBar
+            v-if="workDir"
+            :status="factorValidationStatus"
+            :issue-count="factorValidationErrors.length"
+            :checking="factorValidationChecking"
+            :checked-at="factorValidationCheckedAt"
+            @validate="runGenerateWorkspaceValidation"
+            @open-repair="openFactorsWorkbookRepairDesk"
+            @download-workbook="downloadFactorsWorkbook"
+          />
 
           <!-- 要素 + 材料 双列 -->
           <div v-if="factors.length > 0 || materials.length > 0" class="grid grid-cols-1 gap-4 lg:grid-cols-2">
@@ -275,6 +294,29 @@
             <p class="text-xs text-gray-400 mt-2">在设置中可添加/修改模型列表</p>
           </div>
 
+          <div class="bg-white rounded-xl border p-4 space-y-4">
+            <div class="flex items-center justify-between gap-4">
+              <div>
+                <div class="text-sm font-semibold text-gray-700">优先使用提示词库</div>
+                <div class="text-xs text-gray-400 mt-1">默认开启，命中时直接复用历史要素提示词</div>
+              </div>
+              <label class="inline-flex items-center cursor-pointer">
+                <input v-model="useCaseLibrary" type="checkbox" class="sr-only peer">
+                <div class="relative w-11 h-6 bg-gray-200 rounded-full peer peer-checked:bg-blue-600 transition-colors">
+                  <div class="absolute top-0.5 left-0.5 h-5 w-5 bg-white rounded-full transition-transform peer-checked:translate-x-5"></div>
+                </div>
+              </label>
+            </div>
+            <div v-if="availableExtractProfiles.length > 0">
+              <label class="block text-xs font-semibold text-gray-600 mb-2 uppercase tracking-wide">未命中规则 Profile</label>
+              <select v-model="selectedRuleProfileId" class="w-full px-3 py-2 border rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-300">
+                <option v-for="profile in availableExtractProfiles" :key="profile.id" :value="profile.id">
+                  {{ profile.name || profile.id }}
+                </option>
+              </select>
+            </div>
+          </div>
+
           <!-- 操作按钮 -->
           <div class="flex flex-col gap-3 pt-2 sm:flex-row sm:items-center sm:justify-between">
             <div class="text-sm text-gray-500">
@@ -293,13 +335,6 @@
               </svg>
               开始生成提示词
             </button>
-          </div>
-
-          <div v-if="factorValidationErrors.length > 0" class="rounded-xl border border-red-200 bg-red-50 p-3">
-            <p class="text-sm font-semibold text-red-700 mb-1">factors 格式校验未通过</p>
-            <ul class="text-xs text-red-600 space-y-1 list-disc pl-4">
-              <li v-for="(err, i) in factorValidationErrors" :key="`factor-err-${i}`">{{ err }}</li>
-            </ul>
           </div>
         </div>
 
@@ -348,6 +383,13 @@
             <p class="text-base font-semibold text-gray-700">正在生成「{{ batchCurrentMaterial }}」提示词...</p>
             <p class="text-sm text-gray-400 mt-1">调用所选模型分析图片要素，请稍候</p>
             <p class="text-lg font-mono font-bold text-blue-500 mt-3">{{ batchElapsed }}s</p>
+            <button @click="cancelBatchGeneration" :disabled="stopRequested"
+              class="mt-5 inline-flex items-center gap-2 rounded-lg border border-red-200 px-4 py-2 text-sm font-medium text-red-600 transition hover:bg-red-50 disabled:opacity-50">
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 6h12v12H6z" />
+              </svg>
+              {{ stopRequested ? '停止中...' : '停止生成' }}
+            </button>
           </div>
 
           <!-- 批量完成后的材料选项卡 -->
@@ -381,13 +423,11 @@
               <span class="text-xs text-green-700 flex-1 truncate">已保存至：{{ activeResult.output_file }}</span>
             </div>
 
-            <!-- 编辑器 -->
             <div class="bg-white rounded-xl border overflow-hidden">
               <div class="flex items-center justify-between px-4 py-3 border-b bg-gray-50">
                 <div class="flex items-center gap-2">
-                  <span class="text-sm font-semibold text-gray-700">提示词内容</span>
-                  <span class="text-xs text-gray-400 bg-gray-100 px-2 py-0.5 rounded">可直接编辑修改</span>
-                  <span class="text-xs text-gray-400">{{ editablePrompt.length }} 字符 · {{ editablePrompt.split('\n').length }} 行</span>
+                  <span class="text-sm font-semibold text-gray-700">要素提示词</span>
+                  <span class="text-xs text-gray-400 bg-gray-100 px-2 py-0.5 rounded">{{ activeArtifactFactors.length }} 个字段</span>
                 </div>
                 <div class="flex items-center gap-2">
                   <button @click="copyPrompt"
@@ -396,9 +436,9 @@
                     <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                       <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"/>
                     </svg>
-                    {{ copied ? '已复制' : '复制' }}
+                    {{ copied ? '已复制预览' : '复制预览' }}
                   </button>
-                  <button v-if="promptModified" @click="savePrompt" :disabled="isSaving"
+                  <button v-if="promptModified" @click="saveArtifact" :disabled="isSaving"
                     class="flex items-center gap-1.5 px-3 py-1.5 bg-amber-500 text-white rounded-lg text-xs font-medium hover:bg-amber-600 transition">
                     <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                       <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7H5a2 2 0 00-2 2v9a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-3m-1 4l-3 3m0 0l-3-3m3 3V4"/>
@@ -408,10 +448,39 @@
                   <span v-else class="text-xs text-gray-300">已保存</span>
                 </div>
               </div>
-              <textarea ref="promptTextarea" v-model="editablePrompt"
-                class="w-full text-xs text-gray-700 leading-relaxed bg-white p-4 outline-none resize-none font-mono border-0"
-                style="min-height: 320px;"
-                placeholder="提示词内容..."/>
+              <div class="divide-y">
+                <div v-for="(factor, factorIndex) in activeArtifactFactors" :key="`${factor.factorname}-${factorIndex}`" class="p-4 space-y-2">
+                  <div class="flex items-center justify-between gap-3">
+                    <div>
+                      <div class="text-sm font-semibold text-gray-800">{{ factor.factorname }}</div>
+                      <div v-if="factor.factoruse" class="text-xs text-gray-400 mt-1">{{ factor.factoruse }}</div>
+                    </div>
+                    <span class="px-2 py-0.5 rounded-full text-xs font-medium"
+                      :class="factor.source === 'case_library'
+                        ? 'bg-green-50 text-green-700 border border-green-200'
+                        : factor.source === 'ai_generated'
+                          ? 'bg-blue-50 text-blue-700 border border-blue-200'
+                          : 'bg-amber-50 text-amber-700 border border-amber-200'">
+                      {{ sourceLabel(factor.source) }}
+                    </span>
+                  </div>
+                  <textarea
+                    :value="factor.factor_prompt"
+                    @input="updateFactorPrompt(factorIndex, $event.target.value)"
+                    class="w-full text-xs text-gray-700 leading-relaxed bg-white p-3 outline-none resize-y font-mono border rounded-lg"
+                    rows="4"
+                    placeholder="请输入该要素对应的提取提示词..."
+                  />
+                </div>
+              </div>
+            </div>
+
+            <div class="bg-white rounded-xl border overflow-hidden">
+              <div class="px-4 py-3 border-b bg-gray-50 flex items-center justify-between">
+                <span class="text-sm font-semibold text-gray-700">完整提示词预览</span>
+                <span class="text-xs text-gray-400">系统按模板自动拼装，仅供验证查看</span>
+              </div>
+              <pre class="text-xs text-gray-700 leading-relaxed whitespace-pre-wrap p-4 max-h-72 overflow-y-auto font-mono">{{ activePreviewPrompt }}</pre>
             </div>
 
             <!-- 底部操作 -->
@@ -826,18 +895,32 @@
           </div>
         </div>
 
+        <FactorsWorkbookRepairPanel
+          :open="showFactorsWorkbookRepair"
+          :work-dir="workDir"
+          :errors="factorValidationErrors"
+          :diagnostics="factorValidationDiagnostics"
+          @close="showFactorsWorkbookRepair = false"
+          @validation-updated="handleFactorsWorkbookValidationUpdated"
+          @log="addLog"
+        />
+
       </div>
     </div>
   </div>
 </template>
 
 <script setup>
-import { ref, computed, watch, onMounted, onUnmounted, onActivated, nextTick } from 'vue'
+import { ref, computed, onMounted, onUnmounted, onActivated, nextTick } from 'vue'
 import { useRoute } from 'vue-router'
 import { getScopedStorageItem, removeScopedStorageItem, setScopedStorageItem } from '../services/authState.js'
 import { apiClient } from '../services/apiClient.js'
+import { cancelTask, isTaskCancelledError, startTask, waitForTask } from '../services/taskService.js'
 import { invoke } from '../tauri/tauri.js'
 import { selectWorkspace } from '../services/uploadService.js'
+import FactorsWorkbookRepairPanel from '../components/FactorsWorkbookRepairPanel.vue'
+import WorkspaceValidationStatusBar from '../components/WorkspaceValidationStatusBar.vue'
+import { applyFactorPromptEdit, buildPreviewPrompt, normalizeArtifact, sourceLabel } from './generateArtifactState.js'
 
 const route = useRoute()
 
@@ -875,18 +958,26 @@ const materials = ref([])
 const selectedMaterials = ref([])  // 多选材料列表
 const availableModels = ref([])
 const selectedModelId = ref('')
+const availableExtractProfiles = ref([])
+const selectedRuleProfileId = ref('')
+const useCaseLibrary = ref(true)
 const isRunning = ref(false)
 const logs = ref([])
 const logContainer = ref(null)
-const promptTextarea = ref(null)
 const copied = ref(false)
 const factorValidationErrors = ref([])
+const factorValidationDiagnostics = ref([])
+const factorValidationStatus = ref('idle')
+const factorValidationCheckedAt = ref('')
+const factorValidationChecking = ref(false)
+const showFactorsWorkbookRepair = ref(false)
+const currentTaskId = ref('')
+const stopRequested = ref(false)
 
 // Step2: 批量生成状态
-const batchResults = ref({})        // { materialName: { success, prompt_template, output_file, error, elapsed } }
+const batchResults = ref({})        // { materialName: { success, artifact, artifact_file, preview_prompt, output_file, error, elapsed, dirty } }
 const batchCurrentMaterial = ref('') // 当前正在生成的材料名
 const activeBatchMaterial = ref('')  // 当前展示编辑的材料名
-const editablePrompt = ref('')
 const promptModified = ref(false)
 const isSaving = ref(false)
 const batchStartTime = ref(0)       // 批量生成开始时间
@@ -930,9 +1021,11 @@ const canGenerate = computed(() => Boolean(
 const batchDoneCount = computed(() => Object.keys(batchResults.value).length)
 const verifyDoneCount = computed(() => Object.values(verifyResults.value).filter(v => v?.success).length)
 const activeResult = computed(() => batchResults.value[activeBatchMaterial.value] || null)
+const activeArtifactFactors = computed(() => activeResult.value?.artifact?.factors || [])
+const activePreviewPrompt = computed(() => activeResult.value?.preview_prompt || '')
 const activeVerifyPrompt = computed(() => {
   const r = batchResults.value[activeVerifyMaterial.value]
-  return r?.prompt_template || ''
+  return r?.preview_prompt || r?.prompt_template || ''
 })
 
 function addLog(message, type = 'info') {
@@ -946,6 +1039,19 @@ function addLog(message, type = 'info') {
       logContainer.value.scrollTop = logContainer.value.scrollHeight
     }
   })
+}
+
+async function cancelBatchGeneration() {
+  if (!isRunning.value || stopRequested.value) return
+  stopRequested.value = true
+  addLog('已请求停止生成，正在结束当前材料...', 'warning')
+  if (!currentTaskId.value) return
+  try {
+    await cancelTask(currentTaskId.value)
+  } catch (error) {
+    stopRequested.value = false
+    addLog(`停止生成失败: ${error}`, 'error')
+  }
 }
 
 function getLogClass(type) {
@@ -970,12 +1076,24 @@ function persistWorkDir() {
   }
 }
 
-function tagWorkspaceModule() {
+async function persistGenerateWorkspaceActivity(status) {
   if (!workDir.value) return
-  const parts = workDir.value.replace(/\\/g, '/').split('/').filter(Boolean)
-  const wsId = parts[parts.length - 1]
-  if (wsId) {
-    apiClient.put(`/api/workspaces/${encodeURIComponent(wsId)}/module`, { module: 'generate' }).catch(() => {})
+  const payload = {
+    workDir: workDir.value,
+    module: 'generate',
+  }
+  if (status !== undefined) {
+    payload.status = status
+  }
+  await apiClient.put('/api/workspaces/activity', payload)
+}
+
+async function tagWorkspaceModule() {
+  if (!workDir.value) return
+  try {
+    await persistGenerateWorkspaceActivity()
+  } catch (error) {
+    console.warn('标记要素生成工作区失败:', error)
   }
 }
 
@@ -998,20 +1116,23 @@ function toggleAllMaterials() {
 function switchBatchMaterial(name) {
   activeBatchMaterial.value = name
   const r = batchResults.value[name]
-  editablePrompt.value = r?.prompt_template || ''
-  promptModified.value = false
+  promptModified.value = Boolean(r?.dirty)
 }
 function switchVerifyMaterial(name) {
   activeVerifyMaterial.value = name
 }
 
-watch(editablePrompt, (val) => {
-  // sync edits back into batchResults so they persist on tab switch
-  if (activeBatchMaterial.value && batchResults.value[activeBatchMaterial.value]) {
-    batchResults.value[activeBatchMaterial.value].prompt_template = val
-    promptModified.value = true
+function updateFactorPrompt(factorIndex, nextPrompt) {
+  const matName = activeBatchMaterial.value
+  const current = batchResults.value[matName]
+  if (!matName || !current?.artifact) return
+  const nextResult = applyFactorPromptEdit(current, factorIndex, nextPrompt)
+  batchResults.value = {
+    ...batchResults.value,
+    [matName]: nextResult,
   }
-})
+  promptModified.value = true
+}
 
 async function loadModels() {
   try {
@@ -1026,6 +1147,11 @@ async function loadModels() {
     if (!mods.find(m => m.id === selectedModelId.value)) {
       selectedModelId.value = defaultId
     }
+    availableExtractProfiles.value = Array.isArray(settings.extract_profiles) ? settings.extract_profiles : []
+    const defaultProfileId = settings.default_extract_profile_id || availableExtractProfiles.value[0]?.id || ''
+    if (!availableExtractProfiles.value.find(profile => profile.id === selectedRuleProfileId.value)) {
+      selectedRuleProfileId.value = defaultProfileId
+    }
   } catch (e) { console.error(e) }
 }
 
@@ -1035,7 +1161,7 @@ onActivated(async () => {
   if (queryWorkDir && queryWorkDir !== workDir.value) {
     workDir.value = queryWorkDir
     persistWorkDir()
-    tagWorkspaceModule()
+    await tagWorkspaceModule()
     addLog(`已打开工作区: ${queryWorkDir}`, 'info')
     await loadDirectoryData()
   } else if (!queryWorkDir && !isRunning.value && workDir.value) {
@@ -1064,7 +1190,7 @@ onMounted(async () => {
   if (queryWorkDir) {
     workDir.value = queryWorkDir
     persistWorkDir()
-    tagWorkspaceModule()
+    await tagWorkspaceModule()
     addLog(`已打开工作区: ${queryWorkDir}`, 'info')
     await loadDirectoryData()
   } else if (!workDir.value && typeof window !== 'undefined') {
@@ -1081,7 +1207,7 @@ async function onWorkDirInput() {
   const dir = workDir.value.trim()
   workDir.value = dir
   persistWorkDir()
-  if (dir) { tagWorkspaceModule(); await loadDirectoryData() }
+  if (dir) { await tagWorkspaceModule(); await loadDirectoryData() }
 }
 
 async function selectWorkDir() {
@@ -1102,7 +1228,7 @@ async function selectWorkDir() {
       if (result.data && result.data.path) {
         workDir.value = result.data.path
         persistWorkDir()
-        tagWorkspaceModule()
+        await tagWorkspaceModule()
         addLog(`已上传工作区: ${result.data.path}`, 'info')
         await loadDirectoryData()
       }
@@ -1142,7 +1268,7 @@ async function selectWorkDirV2() {
       if (nextPath) {
         workDir.value = nextPath
         persistWorkDir()
-        tagWorkspaceModule()
+        await tagWorkspaceModule()
         addLog(`宸蹭笂浼犲伐浣滃尯: ${nextPath}`, 'info')
         await loadDirectoryData()
       }
@@ -1186,7 +1312,7 @@ async function selectWorkDirFromService() {
     if (!result?.rootPath) return
     workDir.value = result.rootPath
     persistWorkDir()
-    tagWorkspaceModule()
+    await tagWorkspaceModule()
     addLog(`已上传工作区: ${result.rootPath}`, 'info')
     await loadDirectoryData()
   } catch (error) {
@@ -1225,10 +1351,14 @@ async function loadDirectoryData() {
   materials.value = []
   selectedMaterials.value = []
   factorValidationErrors.value = []
+  factorValidationDiagnostics.value = []
+  factorValidationStatus.value = 'idle'
+  factorValidationCheckedAt.value = ''
+  factorValidationChecking.value = false
+  showFactorsWorkbookRepair.value = false
   batchResults.value = {}
   retryingMaterials.value = {}
   verifyResults.value = {}
-  editablePrompt.value = ''
   try {
     const factorsData = await apiClient.get('/api/workspaces/factors', { workDir: workDir.value })
     factors.value = factorsData.data || []
@@ -1246,43 +1376,111 @@ async function loadDirectoryData() {
   }
 }
 
-async function validateFactorsForMaterials(materialNames) {
+function applyFactorValidationResult(validation) {
+  factorValidationCheckedAt.value = new Date().toISOString()
+  if (validation?.ok) {
+    factorValidationStatus.value = 'valid'
+    factorValidationErrors.value = []
+    factorValidationDiagnostics.value = []
+    return true
+  }
+  factorValidationStatus.value = 'invalid'
+  factorValidationErrors.value = Array.isArray(validation?.errors) && validation.errors.length > 0
+    ? validation.errors
+    : ['统一工作区校验失败，请检查 factors.xlsx 与材料目录结构。']
+  factorValidationDiagnostics.value = Array.isArray(validation?.diagnostics) ? validation.diagnostics : []
+  return false
+}
+
+function handleFactorsWorkbookValidationUpdated(validation) {
+  if (applyFactorValidationResult(validation)) {
+    addLog('修复后的 factors.xlsx 已通过统一工作区校验。', 'success')
+  } else {
+    addLog('factors.xlsx 已保存，但仍有校验问题待处理。', 'warning')
+  }
+}
+
+function openFactorsWorkbookRepairDesk() {
+  if (!workDir.value) return
+  showFactorsWorkbookRepair.value = true
+}
+
+function downloadFactorsWorkbook() {
+  if (!workDir.value) return
+  apiClient.download('/api/files/download', { path: `${workDir.value}/factors.xlsx` })
+  addLog('已开始下载 factors.xlsx', 'success')
+}
+
+async function validateFactorsForMaterials(materialNames, options = {}) {
+  const { openRepairOnFail = false, silentSuccess = false } = options
   factorValidationErrors.value = []
+  factorValidationDiagnostics.value = []
+  factorValidationChecking.value = true
   try {
     const validationResult = await apiClient.post('/api/generate/validate-factors', {
       workDir: workDir.value,
       materials: materialNames
     })
     const validation = validationResult?.data || {}
-    if (!validation.ok) {
-      factorValidationErrors.value = Array.isArray(validation.errors) ? validation.errors : ['factors 格式校验失败，请检查文件内容。']
-      addLog('factors 格式校验未通过，已阻止生成。', 'error')
+    if (!applyFactorValidationResult(validation)) {
+      if (openRepairOnFail) {
+        showFactorsWorkbookRepair.value = true
+      }
+      addLog(openRepairOnFail ? '工作区校验失败，已打开修复台。' : '工作区校验失败，请先处理后再继续。', 'error')
       factorValidationErrors.value.forEach((msg) => addLog(`校验失败: ${msg}`, 'error'))
       return false
     }
     const warnings = Array.isArray(validation.warnings) ? validation.warnings : []
     warnings.forEach((msg) => addLog(`校验提示: ${msg}`, 'warning'))
+    if (!silentSuccess) {
+      addLog('工作区校验通过。', 'success')
+    }
     return true
   } catch (error) {
-    const errMsg = `factors 格式校验请求失败: ${error}`
+    const errMsg = `统一工作区校验请求失败: ${error}`
+    factorValidationStatus.value = 'invalid'
+    factorValidationCheckedAt.value = new Date().toISOString()
     factorValidationErrors.value = [errMsg]
+    factorValidationDiagnostics.value = []
+    if (openRepairOnFail) {
+      showFactorsWorkbookRepair.value = true
+    }
     addLog(errMsg, 'error')
     return false
+  } finally {
+    factorValidationChecking.value = false
   }
+}
+
+async function runGenerateWorkspaceValidation() {
+  const materialNames = selectedMaterials.value.length > 0
+    ? selectedMaterials.value.map((item) => item.name)
+    : materials.value.map((item) => item.name)
+  await validateFactorsForMaterials(materialNames, { openRepairOnFail: false })
 }
 
 async function goStep2() {
   if (!canGenerate.value || isRunning.value) return
-  const validationOk = await validateFactorsForMaterials(selectedMaterials.value.map(item => item.name))
+  const validationOk = await validateFactorsForMaterials(
+    selectedMaterials.value.map(item => item.name),
+    { openRepairOnFail: true, silentSuccess: true },
+  )
   if (!validationOk) {
     return
   }
 
+  try {
+    await persistGenerateWorkspaceActivity('generating')
+  } catch (error) {
+    addLog(`工作区进行中状态保存失败: ${error}`, 'warning')
+  }
+
   currentStep.value = 2
   isRunning.value = true
+  stopRequested.value = false
+  currentTaskId.value = ''
   batchResults.value = {}
   verifyResults.value = {}
-  editablePrompt.value = ''
   promptModified.value = false
   batchElapsed.value = 0
   currentElapsed.value = 0
@@ -1295,68 +1493,102 @@ async function goStep2() {
 
   addLog(`开始批量生成提示词，共 ${selectedMaterials.value.length} 种材料`, 'info')
 
-  // 标记工作区为“生成中”
-  apiClient.put('/api/workspaces/gen-status', { workDir: workDir.value, status: 'generating' }).catch(() => {})
+  let stoppedByUser = false
 
-  for (const mat of selectedMaterials.value) {
-    batchCurrentMaterial.value = mat.name
-    currentElapsed.value = 0
-    const matStart = Date.now()
-    addLog(`[${mat.name}] 开始生成...`, 'info')
-    try {
-      const generateResult = await apiClient.post('/api/generate/prompt', {
-        workDir: workDir.value,
-        materialName: mat.name,
-        modelCfgId: selectedModelId.value || null
-      })
-      const elapsed = ((Date.now() - matStart) / 1000).toFixed(1)
-      const resultData = { ...generateResult.data }
-      if (!resultData.prompt_template?.trim() && resultData.output_file) {
-        const fileResult = await apiClient.get('/api/files/read', { path: resultData.output_file })
-        resultData.prompt_template = fileResult?.data?.content || ''
+  try {
+    for (const mat of selectedMaterials.value) {
+      if (stopRequested.value) {
+        stoppedByUser = true
+        break
       }
-      if (!resultData.prompt_template?.trim()) {
-        throw new Error('提示词文件为空，未生成有效内容')
+
+      batchCurrentMaterial.value = mat.name
+      currentElapsed.value = 0
+      const matStart = Date.now()
+      addLog(`[${mat.name}] 开始生成...`, 'info')
+      try {
+        const task = await startTask('generate', {
+          workDir: workDir.value,
+          materialName: mat.name,
+          modelCfgId: selectedModelId.value || null,
+          useCaseLibrary: useCaseLibrary.value,
+          ruleProfileId: selectedRuleProfileId.value || null
+        })
+        currentTaskId.value = task.id
+        if (stopRequested.value) {
+          await cancelTask(task.id).catch(() => {})
+        }
+
+        const resultData = { ...(await waitForTask(task.id, null)) }
+        const elapsed = ((Date.now() - matStart) / 1000).toFixed(1)
+        resultData.artifact = normalizeArtifact(resultData.artifact, mat.name)
+        resultData.preview_prompt = resultData.preview_prompt || buildPreviewPrompt(resultData.artifact.template?.prompt_template || '', resultData.artifact.factors || [])
+        resultData.prompt_template = resultData.preview_prompt
+        if (!resultData.preview_prompt?.trim()) {
+          throw new Error('提示词文件为空，未生成有效内容')
+        }
+        batchResults.value[mat.name] = { ...resultData, success: true, elapsed, dirty: false }
+        addLog(`[${mat.name}] 生成成功！耗时 ${elapsed}s`, 'success')
+        if (resultData.output_file) addLog(`已保存: ${resultData.output_file}`, 'success')
+      } catch (error) {
+        const elapsed = ((Date.now() - matStart) / 1000).toFixed(1)
+        if (isTaskCancelledError(error)) {
+          stoppedByUser = true
+          addLog(`[${mat.name}] 已手动停止`, 'warning')
+          break
+        }
+        const errStr = String(error)
+        const msg = errStr.includes('API Key') || errStr.includes('DASHSCOPE') || errStr.includes('OPENAI_API_KEY')
+          ? '未配置可用的 API 密钥，请前往【设置】页面配置默认 API Key 或模型专属 API Key'
+          : String(error)
+        batchResults.value[mat.name] = { success: false, error: msg, prompt_template: '', preview_prompt: '', artifact: null, artifact_file: '', output_file: '', elapsed, dirty: false }
+        addLog(`[${mat.name}] 生成失败: ${msg}`, 'error')
+      } finally {
+        currentTaskId.value = ''
       }
-      batchResults.value[mat.name] = { ...resultData, success: true, elapsed }
-      addLog(`[${mat.name}] 生成成功！耗时 ${elapsed}s`, 'success')
-      if (resultData.output_file) addLog(`已保存: ${resultData.output_file}`, 'success')
-    } catch (error) {
-      const elapsed = ((Date.now() - matStart) / 1000).toFixed(1)
-      const errStr = String(error)
-      const msg = errStr.includes('API Key') || errStr.includes('DASHSCOPE') || errStr.includes('OPENAI_API_KEY')
-        ? '未配置可用的 API 密钥，请前往【设置】页面配置默认 API Key 或模型专属 API Key'
-        : String(error)
-      batchResults.value[mat.name] = { success: false, error: msg, prompt_template: '', output_file: '', elapsed }
-      addLog(`[${mat.name}] 生成失败: ${msg}`, 'error')
     }
+  } finally {
+    clearInterval(elapsedTimer)
+    batchElapsed.value = Math.floor((Date.now() - batchStartTime.value) / 1000)
+    batchCurrentMaterial.value = ''
+    currentTaskId.value = ''
+    isRunning.value = false
   }
-
-  clearInterval(elapsedTimer)
-  batchElapsed.value = Math.floor((Date.now() - batchStartTime.value) / 1000)
-  batchCurrentMaterial.value = ''
-  isRunning.value = false
 
   // 自动切换到第一个成功的材料
   const firstSuccess = selectedMaterials.value.find(m => batchResults.value[m.name]?.success)
   if (firstSuccess) {
     activeBatchMaterial.value = firstSuccess.name
-    editablePrompt.value = batchResults.value[firstSuccess.name].prompt_template || ''
     promptModified.value = false
-    nextTick(() => { if (promptTextarea.value) promptTextarea.value.scrollTop = 0 })
   }
   const successCount = Object.values(batchResults.value).filter(r => r.success).length
-  addLog(`批量生成完成：成功 ${successCount}/${selectedMaterials.value.length}，总耗时 ${batchElapsed.value}s`, 'success')
+  if (stoppedByUser || stopRequested.value) {
+    addLog(`已手动停止生成，已保留 ${successCount}/${selectedMaterials.value.length} 个已完成材料`, 'warning')
+  } else {
+    addLog(`批量生成完成：成功 ${successCount}/${selectedMaterials.value.length}，总耗时 ${batchElapsed.value}s`, 'success')
+  }
 
   // 标记工作区生成状态
-  const finalStatus = successCount > 0 ? 'done' : 'error'
-  apiClient.put('/api/workspaces/gen-status', { workDir: workDir.value, status: finalStatus }).catch(() => {})
+  const finalStatus = stoppedByUser || stopRequested.value
+    ? ''
+    : successCount > 0
+      ? 'done'
+      : 'error'
+  try {
+    await persistGenerateWorkspaceActivity(finalStatus)
+  } catch (error) {
+    addLog(`工作区最终状态保存失败: ${error}`, 'warning')
+  }
+  stopRequested.value = false
 }
 
 async function retrySingleMaterial(materialName) {
   if (!materialName || isRunning.value || retryingMaterials.value[materialName]) return
   const validationOk = await validateFactorsForMaterials([materialName])
-  if (!validationOk) return
+  if (!validationOk) {
+    showFactorsWorkbookRepair.value = true
+    return
+  }
 
   retryingMaterials.value = { ...retryingMaterials.value, [materialName]: true }
   const matStart = Date.now()
@@ -1365,22 +1597,21 @@ async function retrySingleMaterial(materialName) {
     const generateResult = await apiClient.post('/api/generate/prompt', {
       workDir: workDir.value,
       materialName,
-      modelCfgId: selectedModelId.value || null
+      modelCfgId: selectedModelId.value || null,
+      useCaseLibrary: useCaseLibrary.value,
+      ruleProfileId: selectedRuleProfileId.value || null
     })
     const elapsed = ((Date.now() - matStart) / 1000).toFixed(1)
     const resultData = { ...generateResult.data }
-    if (!resultData.prompt_template?.trim() && resultData.output_file) {
-      const fileResult = await apiClient.get('/api/files/read', { path: resultData.output_file })
-      resultData.prompt_template = fileResult?.data?.content || ''
-    }
-    if (!resultData.prompt_template?.trim()) {
+    resultData.artifact = normalizeArtifact(resultData.artifact, materialName)
+    resultData.preview_prompt = resultData.preview_prompt || buildPreviewPrompt(resultData.artifact.template?.prompt_template || '', resultData.artifact.factors || [])
+    resultData.prompt_template = resultData.preview_prompt
+    if (!resultData.preview_prompt?.trim()) {
       throw new Error('提示词文件为空，未生成有效内容')
     }
-    batchResults.value[materialName] = { ...resultData, success: true, elapsed }
+    batchResults.value[materialName] = { ...resultData, success: true, elapsed, dirty: false }
     activeBatchMaterial.value = materialName
-    editablePrompt.value = resultData.prompt_template || ''
     promptModified.value = false
-    nextTick(() => { if (promptTextarea.value) promptTextarea.value.scrollTop = 0 })
     addLog(`[${materialName}] 单个重新生成成功！耗时 ${elapsed}s`, 'success')
     if (resultData.output_file) addLog(`已保存: ${resultData.output_file}`, 'success')
   } catch (error) {
@@ -1389,7 +1620,7 @@ async function retrySingleMaterial(materialName) {
     const msg = errStr.includes('API Key') || errStr.includes('DASHSCOPE') || errStr.includes('OPENAI_API_KEY')
       ? '未配置可用的 API 密钥，请前往【设置】页面配置默认 API Key 或模型专属 API Key'
       : String(error)
-    batchResults.value[materialName] = { success: false, error: msg, prompt_template: '', output_file: '', elapsed }
+    batchResults.value[materialName] = { success: false, error: msg, prompt_template: '', preview_prompt: '', artifact: null, artifact_file: '', output_file: '', elapsed, dirty: false }
     addLog(`[${materialName}] 单个重新生成失败: ${msg}`, 'error')
   } finally {
     const nextState = { ...retryingMaterials.value }
@@ -1448,8 +1679,14 @@ async function runVerify() {
   addLog(`[验证] 开始验证「${matName}」...${verifyWorkDir.value ? '（使用验证材料）' : ''}`, 'info')
   try {
     const materialDir = `${baseDir}/${matName}`
-    const promptText = activeVerifyPrompt.value
-    const vr = await apiClient.post('/api/generate/verify', { materialDir, promptText, modelCfgId: selectedModelId.value || null })
+    const currentArtifact = batchResults.value[matName]?.artifact || null
+    const currentArtifactFile = batchResults.value[matName]?.artifact_file || null
+    const vr = await apiClient.post('/api/generate/verify', {
+      materialDir,
+      artifact: currentArtifact,
+      artifactFile: currentArtifactFile,
+      modelCfgId: selectedModelId.value || null
+    })
     verifyResults.value = { ...verifyResults.value, [matName]: vr.data }
     if (vr.data.success) {
       addLog(`[验证] 「${matName}」提取完成，请人工检查结果`, 'success')
@@ -1465,16 +1702,31 @@ async function runVerify() {
   }
 }
 
-async function savePrompt() {
+async function saveArtifact() {
   const matName = activeBatchMaterial.value
   const r = batchResults.value[matName]
-  if (!r?.output_file || isSaving.value) return
+  if (!r?.artifact_file || !r?.artifact || isSaving.value) return
   isSaving.value = true
   try {
-    await apiClient.post('/api/generate/save-prompt', { filePath: r.output_file, content: editablePrompt.value })
-    if (batchResults.value[matName]) batchResults.value[matName].prompt_template = editablePrompt.value
+    const response = await apiClient.post('/api/generate/save-artifact', {
+      filePath: r.artifact_file,
+      artifact: r.artifact,
+      previewFilePath: r.output_file || null
+    })
+    const savedArtifact = normalizeArtifact(response?.data?.artifact || r.artifact, matName)
+    const previewPrompt = buildPreviewPrompt(savedArtifact.template?.prompt_template || '', savedArtifact.factors || [])
+    batchResults.value = {
+      ...batchResults.value,
+      [matName]: {
+        ...r,
+        artifact: savedArtifact,
+        preview_prompt: previewPrompt,
+        prompt_template: previewPrompt,
+        dirty: false,
+      },
+    }
     promptModified.value = false
-    addLog(`「${matName}」提示词修改已保存`, 'success')
+    addLog(`「${matName}」要素提示词修改已保存`, 'success')
   } catch (e) {
     addLog(`保存失败: ${e}`, 'error')
   } finally {
@@ -1503,7 +1755,7 @@ function confirmAndGoStep4() {
 }
 
 async function copyPrompt() {
-  const text = editablePrompt.value
+  const text = activePreviewPrompt.value
   if (!text) return
   try {
     await navigator.clipboard.writeText(text)
@@ -1519,10 +1771,11 @@ function goNextMaterial() {
   batchResults.value = {}
   verifyResults.value = {}
   verifyWorkDir.value = ''
-  editablePrompt.value = ''
   promptModified.value = false
   activeBatchMaterial.value = ''
   activeVerifyMaterial.value = ''
+  currentTaskId.value = ''
+  stopRequested.value = false
   fjResults.value = []
   fjPreviewItem.value = null
   fjCopiedItem.value = null
@@ -1618,16 +1871,22 @@ async function clear() {
   retryingMaterials.value = {}
   verifyResults.value = {}
   verifyWorkDir.value = ''
-  editablePrompt.value = ''
   promptModified.value = false
   activeBatchMaterial.value = ''
   activeVerifyMaterial.value = ''
+  currentTaskId.value = ''
+  stopRequested.value = false
   logs.value = []
   fjResults.value = []
   fjPreviewItem.value = null
   fjCopiedItem.value = null
   fjDownloadingAll.value = false
   factorValidationErrors.value = []
+  factorValidationDiagnostics.value = []
+  factorValidationStatus.value = 'idle'
+  factorValidationCheckedAt.value = ''
+  factorValidationChecking.value = false
+  showFactorsWorkbookRepair.value = false
   await loadModels()
 }
 </script>

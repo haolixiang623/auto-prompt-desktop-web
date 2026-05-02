@@ -110,6 +110,42 @@ def read_factors_from_excel(excel_path):
 
 # ─────────────────────────── TXT 提取 ────────────────────────────
 
+def load_factor_prompt_artifact(material_dir, material_name):
+    artifact_path = Path(material_dir) / f"{material_name}--要素提示词.json"
+    if not artifact_path.exists():
+        return None
+    try:
+        data = json.loads(artifact_path.read_text(encoding='utf-8'))
+    except Exception as e:
+        print(f"[错误] 读取要素提示词 JSON 失败 {artifact_path}: {e}")
+        return None
+
+    factors = []
+    for idx, item in enumerate(data.get("factors") or [], start=1):
+        if not isinstance(item, dict):
+            continue
+        factor_name = str(item.get("factorname") or item.get("name") or "").strip()
+        if not factor_name:
+            continue
+        factors.append({
+            "index": int(item.get("index") or idx),
+            "factorname": factor_name,
+            "factor_prompt": str(item.get("factor_prompt") or "").strip(),
+            "factoruse": str(item.get("factoruse") or "").strip(),
+            "factortype": str(item.get("factortype") or "1").strip() or "1",
+            "source": str(item.get("source") or "").strip(),
+        })
+
+    template = ""
+    if isinstance(data.get("template"), dict):
+        template = str(data["template"].get("prompt_template") or "").strip()
+
+    return {
+        "template": template,
+        "factors": factors,
+        "path": str(artifact_path),
+    }
+
 def extract_prompt_rules(txt_path):
     """从提示词 TXT 文件中提取 {要素名称: 识别提示词} 字典，
     同时返回文件中要素的出现顺序列表（用于分组时确定组成员）。
@@ -267,31 +303,43 @@ def generate_import_json(material_name, factors_info, material_dir, group_size=4
         dict: {carriername, factors, promptGroups}
     """
     factor_names = [f[0] for f in factors_info]
+    artifact = load_factor_prompt_artifact(material_dir, material_name)
 
-    # ── 扫描提示词 TXT 文件 ──
-    txt_files = sorted([
-        f for f in os.listdir(material_dir)
-        if f.endswith('.txt') and '提示词' in f
-    ])
-
-    prompt_dict = {}
-    groups = []
-
-    if len(txt_files) > 1:
-        print(f"  [信息] 发现 {len(txt_files)} 个提示词文件 → 每文件对应一个分组")
-        prompt_dict, groups = build_prompt_groups_from_txts(material_dir, factor_names, txt_files)
-
-    elif len(txt_files) == 1:
-        txt_path = os.path.join(material_dir, txt_files[0])
-        print(f"  [信息] 读取提示词: {txt_files[0]}")
-        prompt_dict, _ = extract_prompt_rules(txt_path)
-        print(f"  [信息] 提取到 {len(prompt_dict)} 个要素识别规则")
-        print(f"  [信息] 按每组 {group_size} 个要素自动分组")
-        groups = build_prompt_groups_by_size(factor_names, prompt_dict, group_size, txt_path)
-
+    if artifact:
+        print(f"  [信息] 读取要素提示词 JSON: {Path(artifact['path']).name}")
+        prompt_dict = {
+            item["factorname"]: item["factor_prompt"]
+            for item in artifact["factors"]
+            if item["factor_prompt"]
+        }
+        groups = build_prompt_groups_by_size(factor_names, prompt_dict, group_size, None)
+        for group in groups:
+            group["prompt_template"] = artifact["template"]
     else:
-        print(f"  [警告] 未找到提示词文件，按每组 {group_size} 个要素自动分组（prompt_template 留空）")
-        groups = build_prompt_groups_by_size(factor_names, {}, group_size, None)
+        # ── 扫描提示词 TXT 文件 ──
+        txt_files = sorted([
+            f for f in os.listdir(material_dir)
+            if f.endswith('.txt') and '提示词' in f
+        ])
+
+        prompt_dict = {}
+        groups = []
+
+        if len(txt_files) > 1:
+            print(f"  [信息] 发现 {len(txt_files)} 个提示词文件 → 每文件对应一个分组")
+            prompt_dict, groups = build_prompt_groups_from_txts(material_dir, factor_names, txt_files)
+
+        elif len(txt_files) == 1:
+            txt_path = os.path.join(material_dir, txt_files[0])
+            print(f"  [信息] 读取提示词: {txt_files[0]}")
+            prompt_dict, _ = extract_prompt_rules(txt_path)
+            print(f"  [信息] 提取到 {len(prompt_dict)} 个要素识别规则")
+            print(f"  [信息] 按每组 {group_size} 个要素自动分组")
+            groups = build_prompt_groups_by_size(factor_names, prompt_dict, group_size, txt_path)
+
+        else:
+            print(f"  [警告] 未找到提示词文件，按每组 {group_size} 个要素自动分组（prompt_template 留空）")
+            groups = build_prompt_groups_by_size(factor_names, {}, group_size, None)
 
     deduped_factors_info = deduplicate_factors(factors_info, prompt_dict)
     deduped_factor_names = [f[0] for f in deduped_factors_info]
