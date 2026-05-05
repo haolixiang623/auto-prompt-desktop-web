@@ -7,6 +7,10 @@ from typing import Any
 
 import openpyxl
 
+from .review_rule_placeholders import (
+    extract_review_rule_placeholders,
+    resolve_review_rule_placeholder_token,
+)
 from .review_rule_builtin_variables import (
     load_review_rule_builtin_variables,
     map_review_rule_builtin_variables_by_token,
@@ -15,8 +19,6 @@ from .review_rule_builtin_variables import (
 
 MEDIA_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".gif", ".webp", ".pdf"}
 LEGACY_NON_MATERIAL_DIRS = {"待分类材料", "待分类", "已分类材料"}
-REVIEW_RULE_FACTOR_REF_PATTERN = re.compile(r"#([^#\n-]+)-([^#\n]+)#")
-REVIEW_RULE_PLACEHOLDER_PATTERN = re.compile(r"#([^#\n]+)#")
 
 
 def _text(value: Any) -> str:
@@ -274,48 +276,25 @@ def validate_workspace_bundle(paths: Any, work_dir: str, selected_materials: lis
                     )
                     continue
 
-                placeholders = [_text(match.group(1)) for match in REVIEW_RULE_PLACEHOLDER_PATTERN.finditer(rule_desc)]
-                refs = [
-                    (_text(match.group(1)), _text(match.group(2)))
-                    for match in REVIEW_RULE_FACTOR_REF_PATTERN.finditer(rule_desc)
-                ]
+                placeholders = extract_review_rule_placeholders(rule_desc)
 
                 if not placeholders:
                     keypoint_refs_to_validate.append(
                         {
                             "row_number": row_number,
                             "kpname": kpname,
-                            "refs": [],
+                            "material_name": current_material,
+                            "placeholders": [],
                         }
                     )
-                    continue
-
-                factor_ref_tokens = {f"{material}-{factor}" for material, factor in refs}
-                invalid_tokens = [
-                    token
-                    for token in placeholders
-                    if token not in factor_ref_tokens and token not in builtin_variable_map
-                ]
-                if invalid_tokens:
-                    for token in invalid_tokens:
-                        _push_error(
-                            errors,
-                            diagnostics,
-                            f"第 {row_number} 行审查要点「{kpname}」引用的占位符「#{token}#」无效："
-                            "请使用 #材料名称-要素名称#，或先在设置中维护该内置变量。",
-                            code="invalid_placeholder",
-                            row=row_number,
-                            column="审查要点规则说明",
-                            keypointName=kpname,
-                            token=token,
-                        )
                     continue
 
                 keypoint_refs_to_validate.append(
                     {
                         "row_number": row_number,
                         "kpname": kpname,
-                        "refs": refs,
+                        "material_name": current_material,
+                        "placeholders": placeholders,
                     }
                 )
 
@@ -386,7 +365,32 @@ def validate_workspace_bundle(paths: Any, work_dir: str, selected_materials: lis
                     )
 
             for item in keypoint_refs_to_validate:
-                for ref_material, ref_factor in item["refs"]:
+                resolved_refs: list[tuple[str, str]] = []
+                for token in item["placeholders"]:
+                    resolved = resolve_review_rule_placeholder_token(
+                        token,
+                        current_material=item["material_name"],
+                        builtin_variable_map=builtin_variable_map,
+                        known_factor_names=factor_names_by_material.get(item["material_name"], set()),
+                    )
+                    if resolved["kind"] == "factor":
+                        resolved_refs.append((resolved["material"], resolved["field"]))
+                        continue
+                    if resolved["kind"] == "builtin":
+                        continue
+                    _push_error(
+                        errors,
+                        diagnostics,
+                        f"第 {item['row_number']} 行审查要点「{item['kpname']}」引用的占位符「#{token}#」无效："
+                        "请使用 #材料名称-要素名称#，或先在设置中维护该内置变量。",
+                        code="invalid_placeholder",
+                        row=item["row_number"],
+                        column="审查要点规则说明",
+                        keypointName=item["kpname"],
+                        token=token,
+                    )
+
+                for ref_material, ref_factor in resolved_refs:
                     if ref_material not in factor_names_by_material:
                         _push_error(
                             errors,

@@ -20,7 +20,18 @@ import sys
 import json
 import re
 import argparse
+from pathlib import Path
+
 import openpyxl
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from pyserver.app.review_rule_placeholders import (
+    extract_review_rule_refs as shared_extract_review_rule_refs,
+    replace_review_rule_refs_with_placeholders as shared_replace_review_rule_refs_with_placeholders,
+)
 
 # 重定义 print 函数，强制实时刷新输出
 _original_print = print
@@ -227,10 +238,6 @@ def read_review_rules_from_excel(excel_path):
 
 # ─────────────────────────── 要素引用解析 ─────────────────────────────
 
-FACTOR_REF_PATTERN = re.compile(r'#([^#-]+)-([^#]+)#')
-PLACEHOLDER_PATTERN = re.compile(r'#([^#\n]+)#')
-
-
 def is_builtin_variable_token(token):
     return str(token or "").strip() in REVIEW_RULE_BUILTIN_VARIABLE_MAP
 
@@ -239,51 +246,29 @@ def get_builtin_variable(token):
     return REVIEW_RULE_BUILTIN_VARIABLE_MAP.get(str(token or "").strip())
 
 
-def extract_review_refs(text):
+def extract_review_refs(text, current_material="", known_factor_names=None):
     """按出现顺序提取规则中的引用，支持 factor 和 builtin variable。"""
-    refs = []
-    if not text:
-        return refs
-    for match in PLACEHOLDER_PATTERN.finditer(text):
-        token = match.group(1).strip()
-        factor_match = re.fullmatch(r'([^#\n-]+)-([^#\n]+)', token)
-        if factor_match:
-            refs.append({
-                "kind": "factor",
-                "token": token,
-                "material": factor_match.group(1).strip(),
-                "field": factor_match.group(2).strip(),
-            })
-            continue
-        builtin = get_builtin_variable(token)
-        if builtin:
-            refs.append({
-                "kind": "builtin",
-                "token": token,
-                "name": builtin["name"],
-                "placeholder": builtin["placeholder"],
-                "dataType": builtin["dataType"],
-            })
-            continue
-        refs.append({
-            "kind": "invalid",
-            "token": token,
-        })
-    return refs
+    return shared_extract_review_rule_refs(
+        text,
+        current_material=current_material,
+        builtin_variable_map=REVIEW_RULE_BUILTIN_VARIABLE_MAP,
+        known_factor_names=known_factor_names,
+    )
 
-def extract_factor_refs(text):
+
+def extract_factor_refs(text, current_material="", known_factor_names=None):
     """从 #材料-字段# 格式中提取 [(材料名称, 字段名称), ...] 列表"""
     return [
         (ref["material"], ref["field"])
-        for ref in extract_review_refs(text)
+        for ref in extract_review_refs(text, current_material=current_material, known_factor_names=known_factor_names)
         if ref["kind"] == "factor"
     ]
 
 
-def extract_builtin_refs(text):
+def extract_builtin_refs(text, current_material="", known_factor_names=None):
     return [
         ref
-        for ref in extract_review_refs(text)
+        for ref in extract_review_refs(text, current_material=current_material, known_factor_names=known_factor_names)
         if ref["kind"] == "builtin"
     ]
 
@@ -300,23 +285,18 @@ def make_factor_placeholder(material_name, field_name):
     return f"${mat}:{field}$"
 
 
-def replace_rule_refs_with_placeholders(text):
-    def _replace(match):
-        token = match.group(1).strip()
-        factor_match = re.fullmatch(r'([^#\n-]+)-([^#\n]+)', token)
-        if factor_match:
-            return make_factor_placeholder(factor_match.group(1).strip(), factor_match.group(2).strip())
-        builtin = get_builtin_variable(token)
-        if builtin:
-            return builtin["placeholder"]
-        return match.group(0)
-
-    return PLACEHOLDER_PATTERN.sub(_replace, text or "")
+def replace_rule_refs_with_placeholders(text, current_material="", known_factor_names=None):
+    return shared_replace_review_rule_refs_with_placeholders(
+        text,
+        current_material=current_material,
+        builtin_variable_map=REVIEW_RULE_BUILTIN_VARIABLE_MAP,
+        known_factor_names=known_factor_names,
+    )
 
 
 # ─────────────────────────── 规则类型推断 ─────────────────────────────
 
-def infer_review_rule_local(rule_desc, special_note="", factor_name=""):
+def infer_review_rule_local(rule_desc, special_note="", factor_name="", material_name="", known_factor_names=None):
     """本地推断审查规则类型 (不依赖LLM)。
 
     推断逻辑:
@@ -332,7 +312,11 @@ def infer_review_rule_local(rule_desc, special_note="", factor_name=""):
     """
     combined = (rule_desc or "") + " " + (special_note or "")
 
-    refs = extract_review_refs(combined)
+    refs = extract_review_refs(
+        combined,
+        current_material=material_name,
+        known_factor_names=known_factor_names,
+    )
     factor_refs = [ref for ref in refs if ref["kind"] == "factor"]
     builtin_refs = [ref for ref in refs if ref["kind"] == "builtin"]
 
@@ -432,6 +416,7 @@ def call_llm_for_rule(kpname, rule_desc, material_name, api_key, base_url, model
 
 ## 规则格式说明
 - `#材料名称-字段名称#` 表示引用该材料下的某个要素，转换时用 `$材料名称:字段名称$` 格式
+- `#字段名称#` 表示当前材料下该字段的简写引用，例如材料名称为“营业证照”时，`#统一社会信用代码#` 等价于 `#营业证照-统一社会信用代码#`
 - 内置变量说明：
 {builtin_lines or '- 当前未配置内置变量'}
 - review_rule: "1"=大模型(LLM), "2"=规则对比, "3"=Groovy脚本
@@ -547,15 +532,33 @@ def call_llm_for_rule(kpname, rule_desc, material_name, api_key, base_url, model
 
 # ─────────────────────────── 规则构建 ─────────────────────────────
 
-def build_keypoint_rule2(kpname, rule_desc, passreason, nopassreason, material_name, ordernum, exclude_situations, factor_name=""):
+def build_keypoint_rule2(kpname, rule_desc, passreason, nopassreason, material_name, ordernum, exclude_situations, factor_name="", known_factor_names=None):
     """构建 review_rule="2" (规则对比) 的要点JSON。"""
-    refs = [ref for ref in extract_review_refs(rule_desc) if ref["kind"] != "invalid"]
+    refs = [
+        ref
+        for ref in extract_review_refs(
+            rule_desc,
+            current_material=material_name,
+            known_factor_names=known_factor_names,
+        )
+        if ref["kind"] != "invalid"
+    ]
     factor_refs = [ref for ref in refs if ref["kind"] == "factor"]
     builtin_refs = [ref for ref in refs if ref["kind"] == "builtin"]
 
     if not refs:
         # 无引用但被判断为2 -> 降级为1
-        return build_keypoint_rule1(kpname, rule_desc, passreason, nopassreason, material_name, ordernum, exclude_situations)
+        return build_keypoint_rule1(
+            kpname,
+            rule_desc,
+            passreason,
+            nopassreason,
+            material_name,
+            ordernum,
+            exclude_situations,
+            factor_name=factor_name,
+            known_factor_names=known_factor_names,
+        )
 
     def current_factor_ref():
         if not factor_name:
@@ -726,7 +729,17 @@ def build_keypoint_rule2(kpname, rule_desc, passreason, nopassreason, material_n
 
     else:
         if builtin_refs:
-            return build_keypoint_rule1(kpname, rule_desc, passreason, nopassreason, material_name, ordernum, exclude_situations)
+            return build_keypoint_rule1(
+                kpname,
+                rule_desc,
+                passreason,
+                nopassreason,
+                material_name,
+                ordernum,
+                exclude_situations,
+                factor_name=factor_name,
+                known_factor_names=known_factor_names,
+            )
         # 多要素: 逐对构建多组或多条件
         for i, ref in enumerate(factor_refs):
             placeholder = placeholder_of(ref)
@@ -788,10 +801,14 @@ def build_keypoint_rule2(kpname, rule_desc, passreason, nopassreason, material_n
     }
 
 
-def build_keypoint_rule1(kpname, rule_desc, passreason, nopassreason, material_name, ordernum, exclude_situations):
+def build_keypoint_rule1(kpname, rule_desc, passreason, nopassreason, material_name, ordernum, exclude_situations, factor_name="", known_factor_names=None):
     """构建 review_rule="1" (大模型LLM) 的要点JSON。"""
     # 将 #材料-字段# 和 #内置变量# 转换为统一占位符格式用于LLM提示词
-    content = replace_rule_refs_with_placeholders(rule_desc or "")
+    content = replace_rule_refs_with_placeholders(
+        rule_desc or "",
+        current_material=material_name,
+        known_factor_names=known_factor_names,
+    )
     if not content:
         content = f"请审查{material_name}中的{kpname}是否符合要求。"
 
@@ -808,9 +825,17 @@ def build_keypoint_rule1(kpname, rule_desc, passreason, nopassreason, material_n
     }
 
 
-def build_keypoint_rule3(kpname, rule_desc, passreason, nopassreason, material_name, ordernum, exclude_situations, factor_name=""):
+def build_keypoint_rule3(kpname, rule_desc, passreason, nopassreason, material_name, ordernum, exclude_situations, factor_name="", known_factor_names=None):
     """构建 review_rule="3" (Groovy脚本) 的要点JSON。"""
-    refs = [ref for ref in extract_review_refs(rule_desc) if ref["kind"] != "invalid"]
+    refs = [
+        ref
+        for ref in extract_review_refs(
+            rule_desc,
+            current_material=material_name,
+            known_factor_names=known_factor_names,
+        )
+        if ref["kind"] != "invalid"
+    ]
     factor_refs = [ref for ref in refs if ref["kind"] == "factor"]
     builtin_refs = [ref for ref in refs if ref["kind"] == "builtin"]
     if not factor_refs and factor_name:
@@ -926,6 +951,11 @@ def process_material_rules(material_name, keypoints_info, use_llm=False,
     import time
     keypoints = []
     total_count = len(keypoints_info)
+    material_factor_names = {
+        str(kp.get("factor_name") or "").strip()
+        for kp in keypoints_info
+        if str(kp.get("factor_name") or "").strip()
+    }
 
     for idx, kp in enumerate(keypoints_info):
         kp_start_time = time.time()
@@ -972,23 +1002,35 @@ def process_material_rules(material_name, keypoints_info, use_llm=False,
                 continue
 
         # 本地推断
-        review_rule = infer_review_rule_local(rule_desc, special_note, factor_name=factor_name)
+        review_rule = infer_review_rule_local(
+            rule_desc,
+            special_note,
+            factor_name=factor_name,
+            material_name=material_name,
+            known_factor_names=material_factor_names,
+        )
         print(f"         [本地推断] -> review_rule={review_rule}")
 
         if review_rule == "2":
             kp_json = build_keypoint_rule2(
                 kpname, rule_desc, passreason, nopassreason,
-                material_name, ordernum, exclude_situations, factor_name=factor_name
+                material_name, ordernum, exclude_situations,
+                factor_name=factor_name,
+                known_factor_names=material_factor_names,
             )
         elif review_rule == "3":
             kp_json = build_keypoint_rule3(
                 kpname, rule_desc, passreason, nopassreason,
-                material_name, ordernum, exclude_situations, factor_name=factor_name
+                material_name, ordernum, exclude_situations,
+                factor_name=factor_name,
+                known_factor_names=material_factor_names,
             )
         else:
             kp_json = build_keypoint_rule1(
                 kpname, rule_desc, passreason, nopassreason,
-                material_name, ordernum, exclude_situations
+                material_name, ordernum, exclude_situations,
+                factor_name=factor_name,
+                known_factor_names=material_factor_names,
             )
 
         keypoints.append(kp_json)

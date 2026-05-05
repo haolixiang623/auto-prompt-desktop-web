@@ -118,9 +118,11 @@ export const apiClient = {
   },
   download(path, query) {
     const authToken = getAuthToken()
-    const finalQuery = authToken
-      ? { ...(query || {}), authToken }
-      : query
+    const finalQuery = {
+      ...(query || {}),
+      ...(authToken ? { authToken } : {}),
+      _ts: Date.now(),
+    }
     const href = `${DEFAULT_BASE}${withQuery(path, finalQuery)}`
     const link = document.createElement('a')
     link.href = href

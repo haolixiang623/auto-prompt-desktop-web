@@ -102,3 +102,24 @@ def test_validate_review_rule_workspace_returns_structured_diagnostics_for_inval
         and item.get("token") == "当前月份"
         for item in result.get("diagnostics", [])
     )
+
+
+def test_validate_review_rule_workspace_accepts_current_material_shorthand_factor_ref(tmp_path):
+    paths = make_paths(tmp_path)
+    work_dir = paths.user_workspace_root / "user-1" / "workspace-short-factor"
+    work_dir.mkdir(parents=True)
+    material_dir = work_dir / "机动车登记证书"
+    material_dir.mkdir()
+    (material_dir / "sample.jpg").write_bytes(b"fake")
+    write_excel(
+        work_dir / "factors.xlsx",
+        [
+            ["材料名称", "要素字段名称", "要素提取说明", "审查要点名称", "审查要点规则说明"],
+            ["机动车登记证书", "车牌照号", "车辆号牌", "车牌照号校验", "#车牌照号#不能为空"],
+        ],
+    )
+
+    result = main.validate_review_rule_workspace(paths, str(work_dir))
+
+    assert result["ok"] is True
+    assert result["errors"] == []

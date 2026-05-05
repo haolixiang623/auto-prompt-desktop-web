@@ -1567,6 +1567,17 @@ def build_zip_archive(file_paths: list[Path]) -> bytes:
     return buffer.getvalue()
 
 
+def _download_no_cache_headers(extra_headers: Optional[dict[str, str]] = None) -> dict[str, str]:
+    headers = {
+        "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+        "Pragma": "no-cache",
+        "Expires": "0",
+    }
+    if extra_headers:
+        headers.update(extra_headers)
+    return headers
+
+
 def build_zip_from_directory(root_dir: Path) -> bytes:
     buffer = BytesIO()
     with ZipFile(buffer, "w", compression=ZIP_DEFLATED) as zip_file:
@@ -1901,6 +1912,7 @@ async def update_workspace_factors_workbook(payload: dict[str, Any], request: Re
         workbook_path,
         payload.get("headers") or [],
         payload.get("rows") or [],
+        payload.get("mergedRanges") or [],
     )
     validation = validate_workspace_bundle(paths, real_dir)
     return {"ok": True, "data": {"workbook": workbook_data, "validation": validation}}
@@ -1958,9 +1970,11 @@ async def classify_download_result(workDir: str = Query(...), request: Request =
     return Response(
         content=archive,
         media_type="application/zip",
-        headers={
-            "Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}",
-        },
+        headers=_download_no_cache_headers(
+            {
+                "Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}",
+            }
+        ),
     )
 
 
@@ -1987,9 +2001,11 @@ async def generate_download_result(workDir: str = Query(...), request: Request =
     return Response(
         content=archive,
         media_type="application/zip",
-        headers={
-            "Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}",
-        },
+        headers=_download_no_cache_headers(
+            {
+                "Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}",
+            }
+        ),
     )
 
 
@@ -2014,9 +2030,11 @@ async def review_rule_download_result(workDir: str = Query(...), request: Reques
     return Response(
         content=archive,
         media_type="application/zip",
-        headers={
-            "Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}",
-        },
+        headers=_download_no_cache_headers(
+            {
+                "Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}",
+            }
+        ),
     )
 
 
@@ -2154,7 +2172,12 @@ async def put_file_content(payload: dict[str, Any], user: Any = Depends(current_
 async def download_file(path: str = Query(...), request: Request = None, user: Any = Depends(current_user)):
     target = _resolve_user_file_path(request.app.state.paths, path, user.id)
     media_type, _ = mimetypes.guess_type(str(target))
-    return FileResponse(target, media_type=media_type or "application/octet-stream", filename=target.name)
+    return FileResponse(
+        target,
+        media_type=media_type or "application/octet-stream",
+        filename=target.name,
+        headers=_download_no_cache_headers(),
+    )
 
 
 @app.get("/api/files/download-batch")
@@ -2181,9 +2204,11 @@ async def download_batch_files(pathsJson: str = Query(...), request: Request = N
     return Response(
         content=archive,
         media_type="application/zip",
-        headers={
-            "Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}",
-        },
+        headers=_download_no_cache_headers(
+            {
+                "Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}",
+            }
+        ),
     )
 
 

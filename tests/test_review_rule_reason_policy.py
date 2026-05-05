@@ -99,3 +99,29 @@ def test_build_keypoint_rule1_replaces_builtin_variable_placeholder():
     )
 
     assert "$系统变量:当前日期$" in result["content"]
+
+
+def test_process_material_rules_resolves_current_material_shorthand_factor_ref():
+    keypoints = generate_review_rule.process_material_rules(
+        material_name="机动车登记证书",
+        keypoints_info=[
+            {
+                "factor_name": "车牌照号",
+                "kpname": "车牌照号校验",
+                "rule_desc": "#车牌照号#不能为空",
+                "passreason": "",
+                "nopassreason": "",
+                "ordernum": None,
+                "exclude_situations": "",
+                "special_note": "",
+            }
+        ],
+        use_llm=False,
+    )
+
+    result = keypoints[0]
+    groups = result["review_conditions"]["groups"]
+
+    assert result["review_rule"] == "2"
+    assert groups
+    assert groups[0]["conditions"][0]["elementA"] == "$机动车登记证书:车牌照号$"

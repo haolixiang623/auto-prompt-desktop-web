@@ -16,8 +16,67 @@ test('FactorsWorkbookRepairPanel becomes a full-screen repair desk instead of an
   assert.match(source, /fixed inset-0/, 'repair panel should render as a full-screen overlay instead of stretching the page')
   assert.match(source, /返回业务页继续/, 'repair panel should let the user leave the repair workspace and continue the original task')
   assert.match(source, /问题导航/, 'repair panel should surface a focused issue navigator')
+  assert.match(source, /搜索材料名称 \/ 要素字段名称 \/ 审查要点规则说明/, 'repair panel should expose search for material names, factor names, and review rule descriptions')
+  assert.match(source, /displayedRows/, 'repair panel should keep the main workbook table as a dedicated displayed row set')
+  assert.match(source, /searchMatchedRows/, 'repair panel should keep search matches separate from the full workbook display order')
+  assert.match(source, /rowIssueSummaryMap/, 'repair panel should calculate which rows have validation issues before sorting the main table')
+  assert.match(source, /rowsWithIssuesCount/, 'repair panel should surface how many issue rows are being pushed to the front')
+  assert.match(source, /visibleColumns/, 'repair panel should project a compact visible-column view instead of rendering every workbook column by default')
+  assert.match(source, /visibleColumnIndices/, 'repair panel should compute visible column indices for the compact repair view')
+  assert.match(source, /showAllColumns/, 'repair panel should let users temporarily expand the full column set')
+  assert.match(source, /revealedColumnIndices/, 'repair panel should remember hidden columns that were auto-revealed during navigation')
+  assert.match(source, /columnIndexFromTargetId/, 'repair panel should resolve a focused target back to its column index before auto-revealing hidden columns')
+  assert.match(source, /revealColumn/, 'repair panel should auto-reveal a hidden column when navigation targets it')
+  assert.match(source, /filteredIssueList/, 'repair panel should keep the issue navigator in sync with the active search')
+  assert.match(source, /factorColumnIndex/, 'repair panel should resolve the factor field column before filtering search results')
+  assert.match(source, /ruleDescriptionColumnIndex/, 'repair panel should resolve the review rule description column for search filtering')
+  assert.match(source, /searchResultItems/, 'repair panel should show a dedicated search result list while searching')
+  assert.match(source, /搜索结果列表会按命中字段定位：命中材料名称时跳到材料名称，命中要素字段名称时跳到要素字段，命中审查要点规则说明时跳到对应规则说明。/, 'repair panel should explain that search result clicks follow the matched field')
+  assert.match(source, /默认前置 .* 行问题数据/, 'repair panel should tell the user that issue rows are prioritized in the full table')
+  assert.match(source, /默认展示 .* \/ .* 列/, 'repair panel should summarize the compact default column set for the user')
+  assert.match(source, /显示全部列/, 'repair panel should offer a way to expand all hidden columns')
+  assert.match(source, /恢复默认列/, 'repair panel should let users collapse back to the compact default column set')
+  assert.match(source, /合并单元格已按原表结构展开显示/, 'repair panel should explain that merged workbook cells are expanded for repair')
+  assert.match(source, /mergedRanges/, 'repair panel should keep workbook merge metadata so merged regions can be preserved after save')
+  assert.match(source, /syncMerged/, 'repair panel should sync edits inside merged workbook regions')
+  assert.match(source, /expandMergedWorkbookData/, 'repair panel should expand merged workbook data locally before rendering')
+  assert.match(source, /collectDisplayRowNumbers/, 'repair panel should restore row numbers covered by merged regions even when source rows are sparse')
+  assert.match(source, /carryForwardDisplayColumns/, 'repair panel should carry forward visible group-column values such as 事项名称 and 材料名称')
+  assert.match(source, /sticky top-0 z-10/, 'repair panel should freeze the table header while the table scrolls')
+  assert.match(source, /countMatchedSearchTerms/, 'repair panel should count which search terms hit each field before choosing a jump target')
+  assert.match(source, /resolveSearchResultMatchTarget/, 'repair panel should determine whether the active result matched material name, factor name, or rule description')
+  assert.match(source, /matchTarget/, 'repair panel should store the chosen search-result target on each result item')
+  assert.match(source, /resolveRowMaterialTargetId/, 'repair panel should compute the row-level material-name cell for search navigation')
+  assert.match(source, /resolveRuleDescriptionTargetId/, 'repair panel should still support resolving review-rule-description targets')
+  assert.match(source, /resolveRowRuleDescriptionTargetId/, 'repair panel should compute the row-level review-rule-description cell for search navigation')
+  assert.match(source, /focusSearchResult/, 'repair panel should focus field-specific cells from the search result list')
+  assert.match(source, /currentFocusLabel/, 'repair panel should describe the actual focused target instead of only echoing the previously selected issue')
+  assert.match(source, /buildTargetLocationLabel/, 'repair panel should derive the visible focus summary from the focused target id')
+  assert.match(
+    source,
+    /selectedIssueId\.value = item\.anchorIssue \? item\.anchorIssue\.id : ''/,
+    'repair panel should clear stale issue selection when a search result has no anchored validation issue',
+  )
+  assert.equal(
+    source.includes('搜索材料 / 要素 / 审查要点'),
+    false,
+    'repair panel should no longer search across materials and review points',
+  )
+  assert.equal(
+    source.includes('v-else-if="visibleRows.length === 0"'),
+    false,
+    'repair panel should no longer replace the main table with a no-match state during search',
+  )
   assert.match(source, /下载修复后的 factors\.xlsx/, 'repair panel should expose a repaired workbook download action')
   assert.match(source, /保存并重新校验/, 'repair panel should save workbook edits and immediately re-run validation')
+  assert.match(source, /新增行/, 'repair panel should allow inserting a new workbook row during repair')
+  assert.match(source, /复制行/, 'repair panel should allow cloning an existing workbook row during repair')
+  assert.match(source, /删除行/, 'repair panel should allow deleting an existing workbook row during repair')
+  assert.match(source, /insertWorkbookRow/, 'repair panel should route row insertion and row copying through shared workbook row helpers')
+  assert.match(source, /deleteWorkbookRow/, 'repair panel should route row deletion through shared workbook row helpers')
+  assert.equal(source.includes('新增列'), false, 'repair panel should no longer allow adding columns during repair')
+  assert.equal(source.includes('删除列'), false, 'repair panel should no longer allow deleting columns during repair')
+  assert.equal(source.includes('补齐必需列'), false, 'repair panel should no longer mutate workbook structure by auto-adding required columns')
 })
 
 test('WorkspaceValidationStatusBar exposes compact validation actions', () => {

@@ -356,3 +356,283 @@ async def test_factors_workbook_routes_support_online_repair_and_revalidation(tm
                 "统一社会信用代码校验",
                 "#营业证照-统一社会信用代码#不能为空",
             ]
+
+
+@pytest.mark.asyncio
+async def test_factors_workbook_save_handles_merged_cells(tmp_path, monkeypatch):
+    _bootstrap_env(tmp_path, monkeypatch)
+
+    transport = httpx.ASGITransport(app=app)
+    async with app.router.lifespan_context(app):
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            token = await login(client)
+
+            workspace_resp = await client.post(
+                "/api/workspaces",
+                headers={"Authorization": f"Bearer {token}"},
+                data={"name": "factors-merged-cells"},
+            )
+            workspace = workspace_resp.json()
+            work_dir = Path(workspace["rootPath"])
+
+            workbook_path = work_dir / "factors.xlsx"
+            wb = openpyxl.Workbook()
+            ws = wb.active
+            ws.append(["事项名称", "材料名称", "要素字段名称", "审查要点规则说明"])
+            ws.append(["道路运输证申领", "道路运输证申领登记表", "业户名称", "需与#营业证照-统一社会信用代码#一致"])
+            ws.append(["道路运输证申领", None, "车辆号牌", "需与#机动车行驶证-号牌号码#一致"])
+            ws.merge_cells("A2:A3")
+            ws.merge_cells("B2:B3")
+            wb.save(workbook_path)
+            wb.close()
+
+            load_response = await client.get(
+                "/api/workspaces/factors-workbook",
+                headers={"Authorization": f"Bearer {token}"},
+                params={"workDir": str(work_dir)},
+            )
+
+            assert load_response.status_code == 200
+            load_payload = load_response.json()["data"]
+            assert load_payload["headers"] == ["事项名称", "材料名称", "要素字段名称", "审查要点规则说明"]
+            assert [row["rowNumber"] for row in load_payload["rows"]] == [2, 3]
+            assert load_payload["rows"][0]["values"] == [
+                "道路运输证申领",
+                "道路运输证申领登记表",
+                "业户名称",
+                "需与#营业证照-统一社会信用代码#一致",
+            ]
+            assert load_payload["rows"][1]["values"] == [
+                "道路运输证申领",
+                "道路运输证申领登记表",
+                "车辆号牌",
+                "需与#机动车行驶证-号牌号码#一致",
+            ]
+            assert load_payload["mergedRanges"] == [
+                {"startRow": 2, "endRow": 3, "startColumn": 1, "endColumn": 1},
+                {"startRow": 2, "endRow": 3, "startColumn": 2, "endColumn": 2},
+            ]
+
+            save_response = await client.put(
+                "/api/workspaces/factors-workbook",
+                headers={"Authorization": f"Bearer {token}"},
+                json={
+                    "workDir": str(work_dir),
+                    "headers": ["事项名称", "材料名称", "要素字段名称", "审查要点规则说明"],
+                    "mergedRanges": load_payload["mergedRanges"],
+                    "rows": [
+                        {
+                            "rowNumber": 2,
+                            "values": [
+                                "道路运输证申领",
+                                "道路运输证申领登记表",
+                                "业户名称",
+                                "需与#营业证照-统一社会信用代码#一致",
+                            ]
+                        },
+                        {
+                            "rowNumber": 3,
+                            "values": [
+                                "道路运输证申领",
+                                "道路运输证申领登记表",
+                                "车辆号牌",
+                                "需与#机动车行驶证-号牌号码#一致",
+                            ]
+                        },
+                    ],
+                },
+            )
+
+    assert save_response.status_code == 200
+    payload = save_response.json()["data"]
+    assert payload["workbook"]["rows"][0]["values"] == [
+        "道路运输证申领",
+        "道路运输证申领登记表",
+        "业户名称",
+        "需与#营业证照-统一社会信用代码#一致",
+    ]
+    assert payload["workbook"]["rows"][1]["values"] == [
+        "道路运输证申领",
+        "道路运输证申领登记表",
+        "车辆号牌",
+        "需与#机动车行驶证-号牌号码#一致",
+    ]
+    assert payload["workbook"]["mergedRanges"] == [
+        {"startRow": 2, "endRow": 3, "startColumn": 1, "endColumn": 1},
+        {"startRow": 2, "endRow": 3, "startColumn": 2, "endColumn": 2},
+    ]
+
+    persisted = openpyxl.load_workbook(workbook_path)
+    try:
+        worksheet = persisted.active
+        assert sorted(str(item) for item in worksheet.merged_cells.ranges) == ["A2:A3", "B2:B3"]
+        assert worksheet["A2"].value == "道路运输证申领"
+        assert worksheet["B2"].value == "道路运输证申领登记表"
+        assert worksheet["C3"].value == "车辆号牌"
+    finally:
+        persisted.close()
+
+
+@pytest.mark.asyncio
+async def test_factors_workbook_load_keeps_blank_rows_inside_merged_regions(tmp_path, monkeypatch):
+    _bootstrap_env(tmp_path, monkeypatch)
+
+    transport = httpx.ASGITransport(app=app)
+    async with app.router.lifespan_context(app):
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            token = await login(client)
+
+            workspace_resp = await client.post(
+                "/api/workspaces",
+                headers={"Authorization": f"Bearer {token}"},
+                data={"name": "factors-merged-blank-rows"},
+            )
+            workspace = workspace_resp.json()
+            work_dir = Path(workspace["rootPath"])
+
+            workbook_path = work_dir / "factors.xlsx"
+            wb = openpyxl.Workbook()
+            ws = wb.active
+            ws.append(["事项名称", "材料名称", "要素字段名称", "审查要点规则说明"])
+            ws.append(["道路运输证申领", "道路运输证申领登记表", "业户名称", "需与#营业证照-统一社会信用代码#一致"])
+            ws.append([None, None, None, None])
+            ws.append([None, None, "车辆号牌", "需与#机动车行驶证-号牌号码#一致"])
+            ws.merge_cells("A2:A4")
+            ws.merge_cells("B2:B4")
+            wb.save(workbook_path)
+            wb.close()
+
+            response = await client.get(
+                "/api/workspaces/factors-workbook",
+                headers={"Authorization": f"Bearer {token}"},
+                params={"workDir": str(work_dir)},
+            )
+
+    assert response.status_code == 200
+    payload = response.json()["data"]
+    assert [row["rowNumber"] for row in payload["rows"]] == [2, 3, 4]
+    assert payload["rows"][1]["values"] == [
+        "道路运输证申领",
+        "道路运输证申领登记表",
+        "",
+        "",
+    ]
+    assert payload["rows"][2]["values"] == [
+        "道路运输证申领",
+        "道路运输证申领登记表",
+        "车辆号牌",
+        "需与#机动车行驶证-号牌号码#一致",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_factors_workbook_load_carries_forward_group_headers_without_merge(tmp_path, monkeypatch):
+    _bootstrap_env(tmp_path, monkeypatch)
+
+    transport = httpx.ASGITransport(app=app)
+    async with app.router.lifespan_context(app):
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            token = await login(client)
+
+            workspace_resp = await client.post(
+                "/api/workspaces",
+                headers={"Authorization": f"Bearer {token}"},
+                data={"name": "factors-carry-forward-group-columns"},
+            )
+            workspace = workspace_resp.json()
+            work_dir = Path(workspace["rootPath"])
+
+            workbook_path = work_dir / "factors.xlsx"
+            wb = openpyxl.Workbook()
+            ws = wb.active
+            ws.append(["事项名称", "材料名称", "要素字段名称", "审查要点规则说明"])
+            ws.append(["道路运输证申领", "道路运输证申领登记表", "业户名称", "需与#营业证照-统一社会信用代码#一致"])
+            ws.append([None, None, "车辆号牌", "需与#机动车行驶证-号牌号码#一致"])
+            ws.append([None, None, "经营许可证号", ""])
+            wb.save(workbook_path)
+            wb.close()
+
+            response = await client.get(
+                "/api/workspaces/factors-workbook",
+                headers={"Authorization": f"Bearer {token}"},
+                params={"workDir": str(work_dir)},
+            )
+
+    assert response.status_code == 200
+    payload = response.json()["data"]
+    assert [row["rowNumber"] for row in payload["rows"]] == [2, 3, 4]
+    assert payload["rows"][1]["values"] == [
+        "道路运输证申领",
+        "道路运输证申领登记表",
+        "车辆号牌",
+        "需与#机动车行驶证-号牌号码#一致",
+    ]
+    assert payload["rows"][2]["values"] == [
+        "道路运输证申领",
+        "道路运输证申领登记表",
+        "经营许可证号",
+        "",
+    ]
+    assert payload["mergedRanges"] == []
+
+
+@pytest.mark.asyncio
+async def test_factors_workbook_download_returns_latest_saved_file_with_no_cache_headers(tmp_path, monkeypatch):
+    _bootstrap_env(tmp_path, monkeypatch)
+
+    transport = httpx.ASGITransport(app=app)
+    async with app.router.lifespan_context(app):
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            token = await login(client)
+
+            workspace_resp = await client.post(
+                "/api/workspaces",
+                headers={"Authorization": f"Bearer {token}"},
+                data={"name": "factors-download-latest"},
+            )
+            workspace = workspace_resp.json()
+            work_dir = Path(workspace["rootPath"])
+
+            workbook_path = work_dir / "factors.xlsx"
+            write_excel(
+                workbook_path,
+                [
+                    ["材料名称", "要素字段名称", "要素提取说明"],
+                    ["营业证照", "统一社会信用代码", "旧说明"],
+                ],
+            )
+
+            save_response = await client.put(
+                "/api/workspaces/factors-workbook",
+                headers={"Authorization": f"Bearer {token}"},
+                json={
+                    "workDir": str(work_dir),
+                    "headers": ["材料名称", "要素字段名称", "要素提取说明"],
+                    "rows": [
+                        {
+                            "rowNumber": 2,
+                            "values": ["营业证照", "统一社会信用代码", "新说明"],
+                        }
+                    ],
+                },
+            )
+
+            assert save_response.status_code == 200
+
+            download_response = await client.get(
+                "/api/files/download",
+                headers={"Authorization": f"Bearer {token}"},
+                params={"path": str(workbook_path)},
+            )
+
+    assert download_response.status_code == 200
+    assert download_response.headers["cache-control"] == "no-store, no-cache, must-revalidate, max-age=0"
+    assert download_response.headers["pragma"] == "no-cache"
+    assert download_response.headers["expires"] == "0"
+
+    downloaded = openpyxl.load_workbook(io.BytesIO(download_response.content))
+    try:
+        worksheet = downloaded.active
+        assert worksheet["C2"].value == "新说明"
+    finally:
+        downloaded.close()

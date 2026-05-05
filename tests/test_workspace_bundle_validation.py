@@ -150,6 +150,46 @@ def test_validate_workspace_bundle_accepts_default_builtin_variable_refs(tmp_pat
     assert result["errors"] == []
 
 
+def test_validate_workspace_bundle_accepts_current_material_shorthand_factor_ref(tmp_path):
+    paths = make_paths(tmp_path)
+    work_dir = paths.user_workspace_root / "user-1" / "workspace-short-factor"
+    material_dir = work_dir / "机动车登记证书"
+    material_dir.mkdir(parents=True)
+    (material_dir / "sample.jpg").write_bytes(b"fake")
+    write_excel(
+        work_dir / "factors.xlsx",
+        [
+            ["材料名称", "要素字段名称", "要素提取说明", "审查要点名称", "审查要点规则说明"],
+            ["机动车登记证书", "车牌照号", "车辆号牌", "车牌照号校验", "#车牌照号#不能为空"],
+        ],
+    )
+
+    result = main.validate_workspace_bundle(paths, str(work_dir))
+
+    assert result["ok"] is True
+    assert result["errors"] == []
+
+
+def test_validate_workspace_bundle_rejects_missing_current_material_shorthand_factor_ref(tmp_path):
+    paths = make_paths(tmp_path)
+    work_dir = paths.user_workspace_root / "user-1" / "workspace-short-factor-missing"
+    material_dir = work_dir / "机动车登记证书"
+    material_dir.mkdir(parents=True)
+    (material_dir / "sample.jpg").write_bytes(b"fake")
+    write_excel(
+        work_dir / "factors.xlsx",
+        [
+            ["材料名称", "要素字段名称", "要素提取说明", "审查要点名称", "审查要点规则说明"],
+            ["机动车登记证书", "车牌照号", "车辆号牌", "发动机号校验", "#发动机号#不能为空"],
+        ],
+    )
+
+    result = main.validate_workspace_bundle(paths, str(work_dir))
+
+    assert result["ok"] is False
+    assert any("占位符「#发动机号#」无效" in message for message in result["errors"])
+
+
 def test_validate_workspace_bundle_rejects_unknown_placeholder_token(tmp_path):
     paths = make_paths(tmp_path)
     work_dir = paths.user_workspace_root / "user-1" / "workspace-f"
