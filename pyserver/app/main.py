@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 import mimetypes
@@ -33,6 +34,10 @@ from pydantic import BaseModel
 from .core.paths import get_paths
 from .core.data import DataStore
 from .core.excel_parser import parse_excel_for_cases, parse_excel_for_review_rules
+from .factors_repair_suggestions import (
+    apply_factors_repair_suggestion_patches,
+    generate_factors_repair_suggestions,
+)
 from .factors_workbook import load_factors_workbook, save_factors_workbook
 from .factor_prompt_artifacts import build_preview_prompt, load_factor_prompt_artifact, save_factor_prompt_artifact
 from .review_rule_builtin_variables import normalize_review_rule_builtin_variables
@@ -993,6 +998,81 @@ def resolve_model_id(settings: dict[str, Any], model_cfg_id: Optional[str]) -> s
     return resolve_model_config(settings, model_cfg_id)["model_id"]
 
 
+def suggest_review_rule_description_with_model(
+    settings: dict[str, Any],
+    model_cfg_id: Optional[str],
+    context: dict[str, Any],
+) -> dict[str, Any]:
+    model_config = resolve_model_config(settings, model_cfg_id)
+    if not model_config["model"]:
+        raise ValueError("未配置可用的文本模型")
+    if not model_config["api_key"]:
+        raise ValueError("未配置可用的 API Key")
+
+    factor_name = str(context.get("factorName") or "").strip()
+    keypoint_name = str(context.get("keypointName") or "").strip()
+    material_name = str(context.get("materialName") or "").strip()
+    builtin_tokens = [str(item).strip() for item in (context.get("builtinVariableTokens") or []) if str(item).strip()]
+    factor_candidates = [str(item).strip() for item in (context.get("factorCandidates") or []) if str(item).strip()]
+
+    prompt = f"""你是 factors.xlsx 修复台里的规则说明修复助手。请只为单行“审查要点规则说明为空”的情况生成一个候选规则说明。
+
+## 约束
+1. 只能给出候选建议，不能假装已经保存。
+2. 不得修改材料名称。
+3. 不得修改既有要素定义名称。
+4. 如果引用要素，优先使用当前材料下已有要素；当候选要素名存在时，可使用 #要素名称# 简写。
+5. 允许使用已维护的内置变量：{", ".join(builtin_tokens) if builtin_tokens else "无"}
+6. 输出必须是严格 JSON，不要附加解释。
+
+## 当前行上下文
+- 材料名称: {material_name or "未提供"}
+- 审查要点名称: {keypoint_name or "未提供"}
+- 推测相关要素: {factor_name or "未提供"}
+- 当前材料已有要素: {", ".join(factor_candidates) if factor_candidates else "未提供"}
+
+## 输出格式
+{{
+  "content": "候选规则说明文本",
+  "reason": "一句话说明为什么这样建议",
+  "confidence": 0.0
+}}"""
+
+    from openai import OpenAI
+
+    request_kwargs = {
+        "model": model_config["model"],
+        "messages": [{"role": "user", "content": prompt}],
+        **split_dashscope_extra_params(model_config.get("params")),
+    }
+    if "temperature" not in request_kwargs:
+        request_kwargs["temperature"] = 0.2
+    if "max_tokens" not in request_kwargs and "max_completion_tokens" not in request_kwargs:
+        request_kwargs["max_tokens"] = 320
+
+    client = OpenAI(
+        api_key=model_config["api_key"],
+        base_url=model_config["base_url"],
+        timeout=float(settings.get("llm_timeout", 120)),
+    )
+    response = client.chat.completions.create(**request_kwargs)
+    content = ""
+    try:
+        content = response.choices[0].message.content or ""
+    except Exception:
+        content = ""
+
+    match = re.search(r"\{[\s\S]*\}", content)
+    if not match:
+        raise ValueError("模型响应中未找到 JSON")
+    payload = json.loads(match.group())
+    return {
+        "content": str(payload.get("content") or "").strip(),
+        "reason": str(payload.get("reason") or "").strip(),
+        "confidence": float(payload.get("confidence") or 0.0),
+    }
+
+
 def resolve_extract_profile(settings: dict[str, Any], rule_profile_id: Optional[str]) -> dict[str, Any]:
     profiles = normalize_extract_profiles(
         settings.get("extract_profiles"),
@@ -1916,6 +1996,50 @@ async def update_workspace_factors_workbook(payload: dict[str, Any], request: Re
     )
     validation = validate_workspace_bundle(paths, real_dir)
     return {"ok": True, "data": {"workbook": workbook_data, "validation": validation}}
+
+
+@app.post("/api/workspaces/factors-workbook/repair-suggestions")
+async def workspace_factors_workbook_repair_suggestions(payload: dict[str, Any], request: Request, user: Any = Depends(current_user)):
+    paths = request.app.state.paths
+    real_dir = _resolve_user_work_dir(paths, payload.get("workDir", ""), user.id)
+    settings = request.app.state.ui_settings.load_front()
+    builtin_variables = normalize_review_rule_builtin_variables(settings.get("review_rule_builtin_variables"))
+    use_llm = bool(payload.get("useLlm", True))
+    model_cfg_id = payload.get("modelCfgId")
+
+    async def llm_suggester(context: dict[str, Any]) -> dict[str, Any]:
+        return await asyncio.to_thread(
+            suggest_review_rule_description_with_model,
+            settings,
+            model_cfg_id,
+            context,
+        )
+
+    result = await generate_factors_repair_suggestions(
+        headers=payload.get("headers") or [],
+        rows=payload.get("rows") or [],
+        merged_ranges=payload.get("mergedRanges") or [],
+        diagnostics=payload.get("diagnostics") or [],
+        builtin_variables=builtin_variables,
+        workspace_materials=collect_workspace_material_dirs(Path(real_dir)),
+        llm_rule_description_suggester=llm_suggester if use_llm else None,
+    )
+    return {"ok": True, "data": result}
+
+
+@app.post("/api/workspaces/factors-workbook/apply-repair-suggestion")
+async def apply_workspace_factors_workbook_repair_suggestion(payload: dict[str, Any], request: Request, user: Any = Depends(current_user)):
+    paths = request.app.state.paths
+    real_dir = _resolve_user_work_dir(paths, payload.get("workDir", ""), user.id)
+    try:
+        applied = apply_factors_repair_suggestion_patches(
+            work_dir=real_dir,
+            patches=payload.get("patches") or [],
+        )
+    except ValueError as exc:
+        fail(400, str(exc))
+    validation = validate_workspace_bundle(paths, real_dir)
+    return {"ok": True, "data": {"applied": applied, "validation": validation}}
 
 
 @app.put("/api/workspaces/gen-status")

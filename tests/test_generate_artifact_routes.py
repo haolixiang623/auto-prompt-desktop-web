@@ -526,6 +526,126 @@ async def test_factors_workbook_load_keeps_blank_rows_inside_merged_regions(tmp_
 
 
 @pytest.mark.asyncio
+async def test_factors_workbook_repair_suggestions_route_returns_confirmable_suggestions(tmp_path, monkeypatch):
+    _bootstrap_env(tmp_path, monkeypatch)
+
+    transport = httpx.ASGITransport(app=app)
+    async with app.router.lifespan_context(app):
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            token = await login(client)
+
+            workspace_resp = await client.post(
+                "/api/workspaces",
+                headers={"Authorization": f"Bearer {token}"},
+                data={"name": "factors-repair-suggestions"},
+            )
+            workspace = workspace_resp.json()
+            work_dir = Path(workspace["rootPath"])
+
+            response = await client.post(
+                "/api/workspaces/factors-workbook/repair-suggestions",
+                headers={"Authorization": f"Bearer {token}"},
+                json={
+                    "workDir": str(work_dir),
+                    "useLlm": False,
+                    "headers": ["材料名称", "要素字段名称", "审查要点名称", "审查要点规则说明"],
+                    "rows": [
+                        {
+                            "rowNumber": 2,
+                            "values": ["营业证照", "统一社会信用代码", "", ""],
+                        },
+                        {
+                            "rowNumber": 3,
+                            "values": ["营业证照", "", "统一社会信用代码校验", "#营业证照-统一社会信用代吗#不能为空"],
+                        },
+                    ],
+                    "diagnostics": [
+                        {
+                            "id": "diagnostic-1",
+                            "code": "missing_referenced_factor",
+                            "row": 3,
+                            "column": "审查要点规则说明",
+                            "materialName": "营业证照",
+                            "factorName": "统一社会信用代吗",
+                            "token": "营业证照-统一社会信用代吗",
+                            "message": "引用的要素不存在",
+                        }
+                    ],
+                },
+            )
+
+    assert response.status_code == 200
+    payload = response.json()["data"]
+    assert payload["stats"]["total"] == 1
+    assert payload["stats"]["suggested"] == 1
+    assert payload["items"][0]["diagnosticId"] == "diagnostic-1"
+    assert payload["items"][0]["requiresConfirmation"] is True
+    assert payload["items"][0]["patches"] == [
+        {
+            "type": "cell_update",
+            "rowNumber": 3,
+            "columnIndex": 3,
+            "before": "#营业证照-统一社会信用代吗#不能为空",
+            "after": "#营业证照-统一社会信用代码#不能为空",
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_factors_workbook_apply_repair_suggestion_route_can_clone_workspace_material_files(tmp_path, monkeypatch):
+    _bootstrap_env(tmp_path, monkeypatch)
+
+    transport = httpx.ASGITransport(app=app)
+    async with app.router.lifespan_context(app):
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            token = await login(client)
+
+            workspace_resp = await client.post(
+                "/api/workspaces",
+                headers={"Authorization": f"Bearer {token}"},
+                data={"name": "factors-apply-repair-suggestion"},
+            )
+            workspace = workspace_resp.json()
+            work_dir = Path(workspace["rootPath"])
+
+            source_dir = work_dir / "营业执照"
+            source_dir.mkdir(parents=True, exist_ok=True)
+            (source_dir / "sample-1.jpg").write_bytes(b"fake-image-data")
+
+            workbook_path = work_dir / "factors.xlsx"
+            wb = openpyxl.Workbook()
+            ws = wb.active
+            ws.append(["事项名称", "材料名称", "要素字段名称", "审查要点名称", "审查要点规则说明"])
+            ws.append(["道路运输证申领", "营业执照", "统一社会信用代码", "", ""])
+            ws.append(["道路运输证申领", "营业证照", "统一社会信用代码", "", ""])
+            wb.save(workbook_path)
+            wb.close()
+
+            response = await client.post(
+                "/api/workspaces/factors-workbook/apply-repair-suggestion",
+                headers={"Authorization": f"Bearer {token}"},
+                json={
+                    "workDir": str(work_dir),
+                    "patches": [
+                        {
+                            "type": "workspace_material_clone",
+                            "sourceMaterialName": "营业执照",
+                            "targetMaterialName": "营业证照",
+                            "sourceFileCount": 1,
+                        }
+                    ],
+                },
+            )
+
+    assert response.status_code == 200
+    payload = response.json()["data"]
+    assert payload["applied"]["count"] == 1
+    assert payload["validation"]["ok"] is False
+    assert all(item.get("code") != "missing_material_directory" for item in payload["validation"]["diagnostics"])
+    assert (work_dir / "营业证照" / "sample-1.jpg").exists()
+
+
+@pytest.mark.asyncio
 async def test_factors_workbook_load_carries_forward_group_headers_without_merge(tmp_path, monkeypatch):
     _bootstrap_env(tmp_path, monkeypatch)
 

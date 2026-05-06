@@ -226,6 +226,14 @@
                       <button
                         type="button"
                         class="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-medium text-slate-600 transition hover:bg-slate-50 disabled:opacity-60"
+                        :disabled="loading || saving || suggestionLoading"
+                        @click="generateRepairSuggestions"
+                      >
+                        {{ suggestionLoading ? '修复建议生成中...' : '一键生成修复建议' }}
+                      </button>
+                      <button
+                        type="button"
+                        class="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-medium text-slate-600 transition hover:bg-slate-50 disabled:opacity-60"
                         :disabled="loading || saving"
                         @click="addRow()"
                       >
@@ -280,6 +288,9 @@
                     <span v-if="rowsWithIssuesCount > 0" class="rounded-full bg-red-50 px-2.5 py-1 text-red-700">
                       默认前置 {{ rowsWithIssuesCount }} 行问题数据
                     </span>
+                    <span v-if="repairSuggestions.length > 0" class="rounded-full bg-blue-50 px-2.5 py-1 text-blue-700">
+                      {{ repairSuggestionSummary }}
+                    </span>
                     <span v-if="hasActiveSearch" class="rounded-full bg-slate-100 px-2.5 py-1 text-slate-600">{{ searchResultSummary }}</span>
                     <span v-if="currentFocusLabel" class="rounded-full bg-blue-50 px-2.5 py-1 text-blue-700">
                       当前定位：{{ currentFocusLabel }}
@@ -312,6 +323,124 @@
                 <div v-if="selectedIssueAdvice" class="rounded-2xl border border-slate-200 bg-white px-4 py-3">
                   <p class="text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">当前建议</p>
                   <p class="mt-2 text-sm leading-6 text-slate-600">{{ selectedIssueAdvice }}</p>
+                </div>
+
+                <div class="rounded-2xl border border-slate-200 bg-white px-4 py-4">
+                  <div class="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                    <div class="max-w-3xl">
+                      <p class="text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">Repair Suggestions</p>
+                      <p class="mt-2 text-sm font-semibold text-slate-900">人工审核后修复</p>
+                      <p class="mt-1 text-sm leading-6 text-slate-500">
+                        人工审核通过后，系统会直接帮你修改当前修复草稿；保存并重新校验后才会真正写回 factors.xlsx。
+                      </p>
+                      <p class="mt-1 text-[11px] leading-5 text-slate-400">
+                        生成后请逐条审核；点“审核通过并修复”会立刻改表，点“驳回建议”则保留人工处理。如果中途手动改了草稿，建议重新生成一次保持建议同步。
+                      </p>
+                    </div>
+                    <div class="flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        class="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-medium text-slate-600 transition hover:bg-slate-50 disabled:opacity-60"
+                        :disabled="loading || saving || suggestionLoading"
+                        @click="generateRepairSuggestions"
+                      >
+                        {{ suggestionLoading ? '修复建议生成中...' : '一键生成修复建议' }}
+                      </button>
+                    </div>
+                  </div>
+
+                  <div class="mt-3 flex flex-wrap gap-2 text-[11px] text-slate-500">
+                    <span class="rounded-full bg-slate-100 px-2.5 py-1">问题 {{ issueList.length }}</span>
+                    <span class="rounded-full bg-slate-100 px-2.5 py-1">建议 {{ repairSuggestions.length }}</span>
+                    <span v-if="repairSuggestions.length > 0" class="rounded-full bg-blue-50 px-2.5 py-1 text-blue-700">
+                      {{ repairSuggestionSummary }}
+                    </span>
+                  </div>
+
+                  <div
+                    v-if="suggestionError"
+                    class="mt-4 rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm leading-6 text-red-700"
+                  >
+                    {{ suggestionError }}
+                  </div>
+                  <div
+                    v-else-if="suggestionLoading"
+                    class="mt-4 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-6 text-sm text-slate-500"
+                  >
+                    正在分析当前草稿并生成修复建议...
+                  </div>
+                  <div
+                    v-else-if="repairSuggestions.length === 0"
+                    class="mt-4 rounded-2xl border border-dashed border-slate-200 bg-slate-50 px-4 py-6 text-sm leading-6 text-slate-500"
+                  >
+                    当前还没有修复建议。点击上方“一键生成修复建议”后，会基于现有问题列表生成可人工确认的候选方案。
+                  </div>
+                  <div v-else class="mt-4 space-y-3">
+                    <article
+                      v-for="item in repairSuggestions"
+                      :key="item.id"
+                      class="rounded-2xl border px-4 py-4"
+                      :class="suggestionCardClass(item)"
+                    >
+                      <div class="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                        <div class="min-w-0">
+                          <div class="flex flex-wrap items-center gap-2">
+                            <p class="text-sm font-semibold text-slate-900">{{ item.title }}</p>
+                            <span class="rounded-full px-2 py-1 text-[10px] font-semibold" :class="suggestionBadgeClass(item)">
+                              {{ suggestionBadgeLabel(item) }}
+                            </span>
+                            <span
+                              v-if="item.usedLlm"
+                              class="rounded-full bg-blue-50 px-2 py-1 text-[10px] font-semibold text-blue-700"
+                            >
+                              模型辅助
+                            </span>
+                          </div>
+                          <p class="mt-1 text-xs leading-5 text-slate-500">{{ item.summary }}</p>
+                          <p class="mt-1 text-[11px] leading-5 text-slate-400">{{ suggestionIssueCaption(item) }}</p>
+                        </div>
+                        <div class="flex flex-wrap gap-2">
+                          <button
+                            type="button"
+                            class="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-medium text-slate-600 transition hover:bg-slate-50"
+                            @click="focusSuggestion(item)"
+                          >
+                            定位问题
+                          </button>
+                          <button
+                            v-if="item.status === 'suggested' && item.localStatus === 'pending'"
+                            type="button"
+                            class="rounded-xl bg-slate-900 px-3 py-2 text-xs font-medium text-white transition hover:bg-slate-800"
+                            :disabled="saving || loading"
+                            @click="applySuggestion(item)"
+                          >
+                            审核通过并修复
+                          </button>
+                          <button
+                            v-if="item.localStatus === 'pending'"
+                            type="button"
+                            class="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-medium text-slate-600 transition hover:bg-slate-50"
+                            @click="ignoreSuggestion(item)"
+                          >
+                            驳回建议
+                          </button>
+                        </div>
+                      </div>
+
+                      <p class="mt-3 text-sm leading-6 text-slate-600">{{ item.reason }}</p>
+
+                      <div v-if="item.patches.length > 0" class="mt-3 space-y-2">
+                        <p class="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">建议动作</p>
+                        <p
+                          v-for="(patch, patchIndex) in item.patches"
+                          :key="`${item.id}-patch-${patchIndex}`"
+                          class="rounded-xl bg-slate-50 px-3 py-2 text-[11px] leading-5 text-slate-600"
+                        >
+                          {{ suggestionPatchSummary(patch) }}
+                        </p>
+                      </div>
+                    </article>
+                  </div>
                 </div>
 
                 <div class="overflow-auto rounded-2xl border border-slate-200 bg-white shadow-sm">
@@ -450,11 +579,13 @@ import {
   resolveWorkbookSearchMatchTarget,
   rowMatchesWorkbookSearch,
 } from './factorsWorkbookSearch.js'
+import { applyRepairSuggestionPatches } from './factorsWorkbookRepairSuggestions.js'
 import { deleteWorkbookRow, insertWorkbookRow } from './factorsWorkbookRowOperations.js'
 
 const FACTOR_FIELD_HEADER_ALIASES = ['要素字段名称', '要素名称']
 const DEFAULT_VISIBLE_HEADER_PATTERNS = ['事项名称', '材料名称', '要素字段名称', '要素名称', '审查要点名称', '审查要点规则说明']
 const DISPLAY_CARRY_FORWARD_HEADER_PATTERNS = ['事项名称', '材料名称']
+const WORKSPACE_REPAIR_PATCH_TYPES = new Set(['workspace_material_clone'])
 const WORKSPACE_ONLY_CODES = new Set([
   'workspace_not_found',
   'missing_factors_xlsx',
@@ -502,6 +633,9 @@ const toolbarAnchor = ref(null)
 const searchKeyword = ref('')
 const showAllColumns = ref(false)
 const revealedColumnIndices = ref([])
+const suggestionLoading = ref(false)
+const suggestionError = ref('')
+const repairSuggestions = ref([])
 
 let nextClientRowId = 0
 
@@ -564,6 +698,7 @@ const issueList = computed(() => {
 
 const filteredIssueList = computed(() => issueList.value.filter((item) => matchesIssueSearch(item)))
 const selectedIssue = computed(() => filteredIssueList.value.find((item) => item.id === selectedIssueId.value) || null)
+const issueMap = computed(() => new Map(issueList.value.map((item) => [item.id, item])))
 
 const rowIssueSummaryMap = computed(() => {
   const map = new Map()
@@ -632,6 +767,12 @@ const issueGroups = computed(() => {
 
 const hasDraftChanges = computed(() => buildCurrentSignature() !== lastSavedSignature.value)
 const currentFocusLabel = computed(() => buildTargetLocationLabel(focusedTargetId.value))
+const repairSuggestionSummary = computed(() => {
+  const pending = repairSuggestions.value.filter((item) => item.localStatus === 'pending' && item.status === 'suggested').length
+  const applied = repairSuggestions.value.filter((item) => item.localStatus === 'applied').length
+  const ignored = repairSuggestions.value.filter((item) => item.localStatus === 'ignored').length
+  return `待审核 ${pending} · 已修复 ${applied} · 已驳回 ${ignored}`
+})
 
 const selectedIssueAdvice = computed(() => {
   if (hasPendingRowStructureChanges.value) {
@@ -666,6 +807,9 @@ watch(
     showAllColumns.value = false
     revealedColumnIndices.value = []
     hasPendingRowStructureChanges.value = false
+    suggestionLoading.value = false
+    suggestionError.value = ''
+    repairSuggestions.value = []
   },
 )
 
@@ -782,6 +926,12 @@ function buildSearchResultCaption(row, rowIndex) {
     parts.push(`审查要点：${keypointName}`)
   }
   return parts.join(' · ')
+}
+
+function resetRepairSuggestions() {
+  suggestionLoading.value = false
+  suggestionError.value = ''
+  repairSuggestions.value = []
 }
 
 function findRowByFactorFieldName(factorName) {
@@ -1187,6 +1337,60 @@ function markPendingRowStructureChange(message) {
   emit('log', message, 'warning')
 }
 
+function suggestionIssueCaption(item) {
+  const issue = issueMap.value.get(item?.diagnosticId)
+  if (issue) {
+    return issueCaption(issue)
+  }
+  return '当前问题'
+}
+
+function suggestionPatchSummary(patch) {
+  if (patch?.type === 'cell_update') {
+    return `更新第 ${patch.rowNumber} 行 · ${columnLabel(Number(patch.columnIndex))}`
+  }
+  if (patch?.type === 'row_insert') {
+    return `在第 ${patch.afterRowNumber} 行后新增一行要素定义`
+  }
+  if (patch?.type === 'row_delete') {
+    return `删除第 ${patch.rowNumber} 行重复数据`
+  }
+  if (patch?.type === 'workspace_material_clone') {
+    return `为材料“${patch.targetMaterialName || '未命名材料'}”创建目录，并复制“${patch.sourceMaterialName || '未命名材料'}”的附件样本`
+  }
+  return '未识别的建议动作'
+}
+
+function suggestionBadgeLabel(item) {
+  if (item?.localStatus === 'applied') return '已修复'
+  if (item?.localStatus === 'ignored') return '已驳回'
+  if (item?.status === 'suggested') return '待审核'
+  return '需人工修复'
+}
+
+function suggestionBadgeClass(item) {
+  if (item?.localStatus === 'applied') return 'bg-emerald-50 text-emerald-700'
+  if (item?.localStatus === 'ignored') return 'bg-slate-100 text-slate-600'
+  if (item?.status === 'suggested') return 'bg-blue-50 text-blue-700'
+  return 'bg-amber-50 text-amber-700'
+}
+
+function suggestionCardClass(item) {
+  if (item?.localStatus === 'applied') return 'border-emerald-200 bg-emerald-50/50'
+  if (item?.localStatus === 'ignored') return 'border-slate-200 bg-slate-50'
+  if (item?.status === 'suggested') return 'border-blue-200 bg-white'
+  return 'border-amber-200 bg-amber-50/60'
+}
+
+function updateSuggestionItem(suggestionId, updater) {
+  repairSuggestions.value = repairSuggestions.value.map((item) => {
+    if (item.id !== suggestionId) {
+      return item
+    }
+    return updater(item)
+  })
+}
+
 async function applyRowOperation(result, message, focusRowNumber) {
   replaceLocalRows(result?.rows || [])
   replaceMergedRanges(result?.mergedRanges || [])
@@ -1205,6 +1409,7 @@ async function reloadWorkbook() {
   loading.value = true
   loadError.value = ''
   statusMessage.value = ''
+  resetRepairSuggestions()
   try {
     const response = await apiClient.get('/api/workspaces/factors-workbook', { workDir: props.workDir })
     applyWorkbookData(response?.data || {})
@@ -1264,6 +1469,145 @@ async function deleteRow(rowNumber) {
   })
   if (!result?.deleted) return
   await applyRowOperation(result, `已删除第 ${rowNumber} 行，请保存后重新校验。`, result?.focusRowNumber)
+}
+
+async function generateRepairSuggestions() {
+  if (!props.workDir || suggestionLoading.value) return
+  suggestionLoading.value = true
+  suggestionError.value = ''
+  try {
+    const response = await apiClient.post('/api/workspaces/factors-workbook/repair-suggestions', {
+      workDir: props.workDir,
+      useLlm: true,
+      headers: localHeaders.value,
+      mergedRanges: mergedRanges.value,
+      rows: localRows.value.map((row) => ({ rowNumber: row.rowNumber, values: row.values })),
+      diagnostics: issueList.value,
+    })
+    repairSuggestions.value = (response?.data?.items || []).map((item) => ({
+      ...item,
+      localStatus: 'pending',
+      appliedFocusTargetId: '',
+    }))
+    loadError.value = ''
+    statusTone.value = 'warning'
+    statusMessage.value = repairSuggestions.value.length > 0
+      ? `已生成 ${repairSuggestions.value.length} 条待审核修复项，请逐条审核后执行修复。`
+      : '当前没有可生成的修复建议。'
+    emit('log', statusMessage.value, 'info')
+  } catch (error) {
+    suggestionError.value = `生成修复建议失败: ${error}`
+    emit('log', suggestionError.value, 'error')
+  } finally {
+    suggestionLoading.value = false
+  }
+}
+
+async function focusSuggestion(item) {
+  if (item?.localStatus === 'applied' && item?.appliedFocusTargetId) {
+    await focusTarget(item.appliedFocusTargetId)
+    return
+  }
+  const issue = issueMap.value.get(item?.diagnosticId)
+  if (issue) {
+    await focusIssue(issue)
+    return
+  }
+  const firstPatch = Array.isArray(item?.patches) ? item.patches[0] : null
+  if (firstPatch?.type === 'cell_update') {
+    await focusTarget(cellTargetId(firstPatch.rowNumber, firstPatch.columnIndex))
+  }
+}
+
+function ignoreSuggestion(item) {
+  updateSuggestionItem(item.id, (current) => ({
+    ...current,
+    localStatus: 'ignored',
+  }))
+  emit('log', `已驳回修复建议：${item.title}`, 'info')
+}
+
+async function applyWorkspaceRepairPatches(patches) {
+  if (!props.workDir || !Array.isArray(patches) || patches.length === 0) {
+    return { applied: { count: 0, items: [] }, validation: null }
+  }
+  const response = await apiClient.post('/api/workspaces/factors-workbook/apply-repair-suggestion', {
+    workDir: props.workDir,
+    patches,
+  })
+  return response?.data || { applied: { count: 0, items: [] }, validation: null }
+}
+
+async function applySuggestion(item) {
+  if (!item || item.status !== 'suggested' || item.localStatus !== 'pending') return
+  try {
+    const patches = Array.isArray(item?.patches) ? item.patches : []
+    const workspacePatches = patches.filter((patch) => WORKSPACE_REPAIR_PATCH_TYPES.has(patch?.type))
+    const localPatches = patches.filter((patch) => !WORKSPACE_REPAIR_PATCH_TYPES.has(patch?.type))
+
+    let workspaceApplyResult = { applied: { count: 0, items: [] }, validation: null }
+    if (workspacePatches.length > 0) {
+      workspaceApplyResult = await applyWorkspaceRepairPatches(workspacePatches)
+      emit('validation-updated', workspaceApplyResult.validation || {})
+    }
+
+    let result = {
+      rows: localRows.value,
+      mergedRanges: mergedRanges.value,
+      focusTargetId: '',
+      hasStructuralChanges: false,
+    }
+    if (localPatches.length > 0) {
+      result = applyRepairSuggestionPatches({
+        headers: localHeaders.value,
+        rows: localRows.value,
+        mergedRanges: mergedRanges.value,
+        suggestion: {
+          ...item,
+          patches: localPatches,
+        },
+        createRow: (row) => buildEditableRow(row),
+      })
+      replaceLocalRows(result.rows || [])
+      replaceMergedRanges(result.mergedRanges || [])
+    }
+
+    updateSuggestionItem(item.id, (current) => ({
+      ...current,
+      localStatus: 'applied',
+      appliedFocusTargetId: result.focusTargetId || '',
+    }))
+
+    if (result.hasStructuralChanges && workspacePatches.length > 0) {
+      markPendingRowStructureChange('已按审核结果同步工作区目录并修复当前草稿，行结构已调整，请保存后重新校验。')
+    } else if (result.hasStructuralChanges) {
+      markPendingRowStructureChange('已按审核结果修复当前草稿，行结构已调整，请保存后重新校验。')
+    } else if (workspacePatches.length > 0 && localPatches.length > 0) {
+      loadError.value = ''
+      statusTone.value = 'warning'
+      statusMessage.value = '已按审核结果同步工作区目录并修复当前草稿，请继续保存并重新校验。'
+      emit('log', statusMessage.value, 'warning')
+    } else if (workspacePatches.length > 0) {
+      loadError.value = ''
+      statusTone.value = workspaceApplyResult.validation?.ok ? 'success' : 'warning'
+      statusMessage.value = workspaceApplyResult.validation?.ok
+        ? '已按审核结果同步工作区目录，统一校验已通过。'
+        : '已按审核结果同步工作区目录，请继续处理剩余问题。'
+      emit('log', statusMessage.value, workspaceApplyResult.validation?.ok ? 'success' : 'warning')
+    } else {
+      loadError.value = ''
+      statusTone.value = 'warning'
+      statusMessage.value = '已按审核结果修复当前草稿，请继续保存并重新校验。'
+      emit('log', statusMessage.value, 'warning')
+    }
+    await nextTick()
+    if (result.focusTargetId) {
+      await focusTarget(result.focusTargetId)
+    }
+  } catch (error) {
+    suggestionError.value = `应用修复建议失败: ${error}`
+    emit('log', suggestionError.value, 'error')
+  }
 }
 
 function issueCategory(issue) {
@@ -1370,6 +1714,7 @@ async function saveWorkbook() {
     })
     const payload = response?.data || {}
     applyWorkbookData(payload.workbook || {})
+    resetRepairSuggestions()
     emit('validation-updated', payload.validation || {})
     if (payload.validation?.ok) {
       statusTone.value = 'success'
